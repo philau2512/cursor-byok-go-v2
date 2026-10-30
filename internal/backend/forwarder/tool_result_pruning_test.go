@@ -90,3 +90,28 @@ func TestPruneToolResultToolCallJSONLeavesNonEditToolsUntouched(t *testing.T) {
 		t.Fatalf("non-edit tool payload unexpectedly modified: %s", string(pruned))
 	}
 }
+
+func TestPruneToolResultToolCallJSONTruncatesLargeShellOutput(t *testing.T) {
+	hugeStdout := strings.Repeat("a", 50*1024)
+	rawInput, _ := json.Marshal(map[string]any{
+		"shellToolCall": map[string]any{
+			"result": map[string]any{
+				"stdout": hugeStdout,
+			},
+		},
+	})
+	pruned := pruneToolResultToolCallJSON("Shell", rawInput)
+	if len(pruned) >= len(rawInput) {
+		t.Fatalf("expected shell output to be truncated: before=%d, after=%d", len(rawInput), len(pruned))
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(pruned, &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	shellCall, _ := parsed["shellToolCall"].(map[string]any)
+	result, _ := shellCall["result"].(map[string]any)
+	stdout, _ := result["stdout"].(string)
+	if !strings.Contains(stdout, "omitted") {
+		t.Fatalf("expected middle truncation notice in stdout, got: %s", stdout[:100])
+	}
+}

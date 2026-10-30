@@ -244,3 +244,48 @@ func TestConversationFileStoreBenchmarkLargeSession(t *testing.T) {
 		t.Errorf("append took %v, expected < 50ms", dur)
 	}
 }
+
+func TestConversationFileStoreSaveWithEntriesAppendsJSONL(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewConversationFileStore(tempDir)
+	conversationID := "test-conv-save-append"
+
+	// 1. First turn: save conversation with initial entries
+	entry1 := HistoryEntry{
+		TurnSeq: 1,
+		Role:    "user",
+		Kind:    "user_message",
+		Payload: json.RawMessage(`{"text":"first prompt"}`),
+	}
+	conv1, err := store.SaveConversationWithEntries(conversationID, nil, []HistoryEntry{entry1})
+	if err != nil {
+		t.Fatalf("first SaveConversationWithEntries failed: %v", err)
+	}
+	if len(conv1.Entries) != 1 {
+		t.Fatalf("entries count = %d, want 1", len(conv1.Entries))
+	}
+
+	// 2. Second turn: save conversation with second prompt
+	entry2 := HistoryEntry{
+		TurnSeq: 2,
+		Role:    "user",
+		Kind:    "user_message",
+		Payload: json.RawMessage(`{"text":"second prompt"}`),
+	}
+	conv2, err := store.SaveConversationWithEntries(conversationID, conv1, []HistoryEntry{entry2})
+	if err != nil {
+		t.Fatalf("second SaveConversationWithEntries failed: %v", err)
+	}
+	if len(conv2.Entries) != 2 {
+		t.Fatalf("entries count = %d, want 2", len(conv2.Entries))
+	}
+
+	// Reload from disk to verify context.jsonl has exactly 2 entries
+	reloaded, err := store.LoadConversation(conversationID)
+	if err != nil {
+		t.Fatalf("LoadConversation failed: %v", err)
+	}
+	if len(reloaded.Entries) != 2 {
+		t.Fatalf("reloaded entries count = %d, want 2", len(reloaded.Entries))
+	}
+}

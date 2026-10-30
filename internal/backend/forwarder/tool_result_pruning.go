@@ -6,7 +6,7 @@ import (
 )
 
 // pruneToolResultToolCallJSON 清理 tool_result payload 中的 beforeFullFileContent 与 afterFullFileContent，
-// 只保留 diffString，从源头上切断历史 context.jsonl 随编辑次数急剧膨胀的根源（节省 ~85% 历史体积）。
+// 并对超长 Shell stdout/stderr 进行 middle-truncate，从源头上切断历史 context.jsonl 随编辑与终端输出急剧膨胀的根源。
 func pruneToolResultToolCallJSON(toolName string, raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
@@ -15,7 +15,11 @@ func pruneToolResultToolCallJSON(toolName string, raw json.RawMessage) json.RawM
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return raw
 	}
-	if !stripEditFullFileContents(payload) {
+	changed := stripEditFullFileContents(payload)
+	if compactProjectedShellFields(payload) {
+		changed = true
+	}
+	if !changed {
 		return raw
 	}
 	clean, err := json.Marshal(payload)

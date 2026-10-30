@@ -284,9 +284,9 @@ func (store *ConversationFileStore) SaveConversationWithEntries(conversationID s
 		}
 	}
 	mergeConversationMetadata(conversation, source)
-	appendEntriesInPlace(conversation, resetEntrySequences(entries))
+	assigned := appendEntriesInPlace(conversation, resetEntrySequences(entries))
 	deriveConversationLoopState(conversation)
-	if err := store.writeConversationLocked(normalizedConversationID, conversation); err != nil {
+	if err := store.appendConversationEntriesLocked(normalizedConversationID, conversation, assigned); err != nil {
 		return nil, err
 	}
 	return cloneConversationFile(conversation), nil
@@ -597,10 +597,9 @@ func (store *ConversationFileStore) writeConversationMetaLocked(conversationID s
 	if err := refreshConversationRuntimeState(conversation); err != nil {
 		return err
 	}
-	metadata := cloneConversationFile(conversation)
+	metadata := cloneConversationMetadata(conversation)
 	metadata.SchemaVersion = conversationSchemaVersion
 	metadata.ContextVersion = contextVersionForEntries(conversation.Entries)
-	metadata.Entries = nil
 	return writeJSONFileAtomic(store.statePath(conversationID), metadata)
 }
 
@@ -1194,6 +1193,21 @@ func cloneConversationFile(conversation *ConversationFile) *ConversationFile {
 	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
 	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
 	cloned.Entries = append([]HistoryEntry(nil), conversation.Entries...)
+	return &cloned
+}
+
+func cloneConversationMetadata(conversation *ConversationFile) *ConversationFile {
+	if conversation == nil {
+		return nil
+	}
+	cloned := *conversation
+	cloned.CurrentPlans = clonePlanRegistryEntries(conversation.CurrentPlans)
+	cloned.CurrentTodos = cloneTodoItems(conversation.CurrentTodos)
+	cloned.MCPToolServers = cloneStringMap(conversation.MCPToolServers)
+	cloned.ImportedTurnIDs = cloneByteSlices(conversation.ImportedTurnIDs)
+	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
+	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
+	cloned.Entries = nil
 	return &cloned
 }
 
