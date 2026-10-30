@@ -436,7 +436,7 @@
       "type": "function",
       "function": {
         "name": "PatchEdit",
-        "description": "Edit an existing text file by replacing exact text copied from the latest Read. Use this as the default tool for modifying existing source, markdown, JSON, YAML, config files, and short inline spans.\n\nUsage:\n- Read the relevant file first, then copy the exact current text into old_string.\n- path must be an absolute file path. Do not pass a relative path, workspace-relative path, or bare filename; this tool will not resolve or rewrite it.\n- old_string must match the current file content; line endings (CRLF and LF) are normalized and treated equivalently during matching.\n- By default replace_all is false and old_string must match exactly one occurrence. If it matches multiple occurrences, the tool reports an error.\n- Set replace_all to true only when every exact occurrence should be replaced.\n- new_string may be empty to delete old_string.\n- Write is still only for creating new files or intentionally rewriting a whole file.",
+        "description": "Edit an existing text file by replacing exact text copied from the latest Read. Use this as the default tool for modifying existing source, markdown, JSON, YAML, config files, and short inline spans.\n\nUsage:\n- Read the relevant file first, then copy the exact current text into old_string.\n- path must be an absolute file path. Do not pass a relative path, workspace-relative path, or bare filename; this tool will not resolve or rewrite it.\n- old_string must match the current file content; line endings (CRLF and LF) are normalized and treated equivalently during matching.\n- By default replace_all is false and old_string must match exactly one occurrence. If it matches multiple occurrences, the tool reports an error.\n- Set replace_all to true only when every exact occurrence should be replaced.\n- new_string may be empty to delete old_string.\n- Write is still only for creating new files or intentionally rewriting a whole file.\n- Do NOT re-read a file you just edited to verify — PatchEdit returns diffString and errors if the replacement failed.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -678,7 +678,7 @@
     },
     {
       "function": {
-        "description": "Writes a file to the local filesystem.\n\nUsage:\n- path must be an absolute file path. Do not pass a relative path, workspace-relative path, or bare filename; this tool will not resolve or rewrite it.\n- This tool will overwrite the existing file if there is one at the provided path.\n- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.",
+        "description": "Writes a file to the local filesystem.\n\nUsage:\n- path must be an absolute file path. Do not pass a relative path, workspace-relative path, or bare filename; this tool will not resolve or rewrite it.\n- This tool will overwrite the existing file if there is one at the provided path.\n- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.\n- Do NOT re-read a file you just wrote to verify — Write would have errored if writing failed.",
         "name": "Write",
         "parameters": {
           "properties": {

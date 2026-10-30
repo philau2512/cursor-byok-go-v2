@@ -1561,12 +1561,7 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 		}
 		return nil
 	}
-	entries := []HistoryEntry{
-		newMetadataEntry(stream.TurnSeq, stream.RequestID, "metadata", map[string]any{
-			"kind":       intent.Kind,
-			"starts_run": intent.StartsRun,
-		}),
-	}
+	var entries []HistoryEntry
 	if backgroundShellToolCallID != "" && backgroundShellActionWasNew {
 		entries = append(entries, newBackgroundShellActionMetadataEntry(stream.TurnSeq, stream.RequestID, backgroundShellToolCallID, backgroundShellActionSourceClient))
 	}
@@ -1595,8 +1590,10 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 			return err
 		}
 	}
-	if _, err := service.appendConversationEntries(stream, stream.ConversationID, entries); err != nil {
-		return err
+	if len(entries) > 0 {
+		if _, err := service.appendConversationEntries(stream, stream.ConversationID, entries); err != nil {
+			return err
+		}
 	}
 	if intent.HasExplicitMode {
 		stream.mu.Lock()
