@@ -52,9 +52,12 @@ type cachedConversationEntries struct {
 }
 
 type ConversationFileStore struct {
-	root         string
-	cacheMu      sync.RWMutex
-	entriesCache map[string]cachedConversationEntries
+	root               string
+	cacheMu            sync.RWMutex
+	entriesCache       map[string]cachedConversationEntries
+	transcriptMu       sync.Mutex
+	transcriptVersions map[string]int64
+	transcriptSyncWg   sync.WaitGroup
 }
 
 type conversationContextFile struct {
@@ -68,9 +71,18 @@ type conversationContextFile struct {
 // NewConversationFileStore 创建 JSON history 文件存储。
 func NewConversationFileStore(historyRoot string) *ConversationFileStore {
 	return &ConversationFileStore{
-		root:         strings.TrimSpace(historyRoot),
-		entriesCache: make(map[string]cachedConversationEntries),
+		root:               strings.TrimSpace(historyRoot),
+		entriesCache:       make(map[string]cachedConversationEntries),
+		transcriptVersions: make(map[string]int64),
 	}
+}
+
+// WaitTranscriptSync 等待所有后台 transcript 同步任务完成，主要用于测试或需要确保落盘的时机。
+func (store *ConversationFileStore) WaitTranscriptSync() {
+	if store == nil {
+		return
+	}
+	store.transcriptSyncWg.Wait()
 }
 
 func (store *ConversationFileStore) updateCacheLocked(conversationID string, contextVersion int64, entries []HistoryEntry) {
@@ -769,9 +781,29 @@ func (store *ConversationFileStore) syncCursorTranscriptBestEffort(conversationI
 	if folder == "" {
 		return
 	}
-	if err := store.syncCursorTranscript(conversationID, conversation, folder); err != nil {
-		log.Printf("forwarder transcript sync failed conversation_id=%s err=%v", strings.TrimSpace(conversationID), err)
-	}
+	snapshot := cloneConversationFile(conversation)
+	targetVersion := snapshot.ContextVersion
+
+	store.transcriptSyncWg.Add(1)
+	go func() {
+		defer store.transcriptSyncWg.Done()
+
+		store.transcriptMu.Lock()
+		defer store.transcriptMu.Unlock()
+
+		if store.transcriptVersions == nil {
+			store.transcriptVersions = make(map[string]int64)
+		}
+		if lastVersion, exists := store.transcriptVersions[conversationID]; exists && targetVersion < lastVersion {
+			return
+		}
+
+		if err := store.syncCursorTranscript(conversationID, snapshot, folder); err != nil {
+			log.Printf("forwarder transcript sync failed conversation_id=%s err=%v", strings.TrimSpace(conversationID), err)
+			return
+		}
+		store.transcriptVersions[conversationID] = targetVersion
+	}()
 }
 
 func (store *ConversationFileStore) syncCursorTranscript(conversationID string, conversation *ConversationFile, transcriptsFolder string) error {

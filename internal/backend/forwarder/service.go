@@ -2922,13 +2922,14 @@ func newToolCallEntryWithProviderMetadata(turnSeq int64, requestID string, toolC
 
 // newToolResultEntry 构造 tool_result entry。
 func newToolResultEntry(turnSeq int64, requestID string, toolCallID string, toolName string, arguments string, resultText string, reasoningContent string, toolCall json.RawMessage) HistoryEntry {
+	prunedToolCall := pruneToolResultToolCallJSON(toolName, toolCall)
 	payload, _ := json.Marshal(toolResultEntryPayload{
 		ToolCallID:       strings.TrimSpace(toolCallID),
 		ToolName:         strings.TrimSpace(toolName),
 		Arguments:        strings.TrimSpace(arguments),
 		ResultText:       strings.TrimSpace(resultText),
 		ReasoningContent: strings.TrimSpace(reasoningContent),
-		ToolCall:         append(json.RawMessage(nil), toolCall...),
+		ToolCall:         append(json.RawMessage(nil), prunedToolCall...),
 	})
 	return HistoryEntry{
 		TurnSeq:    turnSeq,
