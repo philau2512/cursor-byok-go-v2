@@ -4,6 +4,7 @@ package promptengine
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -227,9 +228,13 @@ func (engine *Engine) Compile(input CompileInput) (CompiledPrompt, error) {
 	messages = append(messages, buildMessagesFromRequestContext(input.RequestContext)...)
 
 	if text := strings.TrimSpace(input.CurrentUserMessageText); text != "" {
+		userContent := fmt.Sprintf("<user_query>\n%s\n</user_query>", text)
+		if skillName, skillPath := detectInvokedSkill(text, input.RequestContext); skillName != "" {
+			userContent += fmt.Sprintf("\n\n<system_reminder>\nThe user explicitly invoked slash command /%s.\nYou MUST declare at the beginning of your response: ⚡ Using skill: %s\nYou MUST immediately call the Read tool on %q as your very first tool call to inspect and follow the skill instructions before taking any other action.\n</system_reminder>", skillName, skillName, skillPath)
+		}
 		messages = append(messages, Message{
 			Role:    "user",
-			Content: formatMessageText(fmt.Sprintf("<user_query>\n%s\n</user_query>", text)),
+			Content: formatMessageText(userContent),
 		})
 	}
 	messages = append(messages, buildMessagesFromPendingAssistantOutputs(input.PendingAssistantOutputs)...)
@@ -474,7 +479,7 @@ func buildRequestContextAgentSkillsSection(requestContext *agentv1.RequestContex
 	}
 	lines := []string{
 		"<agent_skills>",
-		"When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge. To use a skill, read the skill file at the provided absolute path using the Read tool, then follow the instructions within. When a skill is relevant, read and follow it IMMEDIATELY as your first action. NEVER just announce or mention a skill without actually reading and following it. Only use skills listed below.",
+		"When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge. To use a skill, read the skill file at the provided absolute path using the Read tool, then follow the instructions within. When a skill is relevant or invoked via slash command, declare '⚡ Using skill: <skill_name>' at the beginning of your response and read the skill file IMMEDIATELY as your first action. NEVER just announce or mention a skill without actually reading and following it. Only use skills listed below.",
 		"",
 		`<available_skills description="Skills the agent can use. Use the Read tool with the provided absolute path to fetch full contents.">`,
 	}
@@ -508,6 +513,75 @@ func buildRequestContextAgentSkillsSection(requestContext *agentv1.RequestContex
 	}
 	lines = append(lines, "</available_skills>", "</agent_skills>")
 	return strings.Join(lines, "\n\n")
+}
+
+// deriveSkillNameFromPath 从技能文件绝对路径中推导技能名称标识符。
+func deriveSkillNameFromPath(fullPath string) string {
+	clean := filepath.Clean(fullPath)
+	base := filepath.Base(clean)
+	if strings.EqualFold(base, "skill.md") {
+		return filepath.Base(filepath.Dir(clean))
+	}
+	ext := filepath.Ext(base)
+	if ext != "" {
+		return strings.TrimSuffix(base, ext)
+	}
+	return base
+}
+
+// detectInvokedSkill 检测用户输入是否显式调用了 Slash Command 形式的技能（例如 /brainstorm 或 /ak-brainstorm）。
+func detectInvokedSkill(userText string, requestContext *agentv1.RequestContext) (name string, path string) {
+	if requestContext == nil || strings.TrimSpace(userText) == "" {
+		return "", ""
+	}
+	text := strings.TrimSpace(userText)
+	fields := strings.Fields(text)
+	var candidateCommands []string
+	for _, f := range fields {
+		if strings.HasPrefix(f, "/") {
+			cmd := strings.Trim(strings.TrimPrefix(f, "/"), ",.;:!?\"'()[]{}")
+			if cmd != "" {
+				candidateCommands = append(candidateCommands, strings.ToLower(cmd))
+			}
+		}
+	}
+	if len(candidateCommands) == 0 {
+		return "", ""
+	}
+
+	for _, skill := range requestContext.GetAgentSkills() {
+		if skill == nil {
+			continue
+		}
+		p := strings.TrimSpace(skill.GetFullPath())
+		if p == "" {
+			continue
+		}
+		sName := deriveSkillNameFromPath(p)
+		sNameLower := strings.ToLower(sName)
+		for _, cmd := range candidateCommands {
+			if cmd == sNameLower || cmd == strings.TrimPrefix(sNameLower, "ak-") || "ak-"+cmd == sNameLower {
+				return sName, p
+			}
+		}
+	}
+	for _, desc := range requestContext.GetSkillOptions().GetSkillDescriptors() {
+		if desc == nil {
+			continue
+		}
+		p := strings.TrimSpace(desc.GetReadmeFilePath())
+		if p == "" {
+			continue
+		}
+		sName := deriveSkillNameFromPath(p)
+		sNameLower := strings.ToLower(sName)
+		for _, cmd := range candidateCommands {
+			if cmd == sNameLower || cmd == strings.TrimPrefix(sNameLower, "ak-") || "ak-"+cmd == sNameLower {
+				return sName, p
+			}
+		}
+	}
+	return "", ""
 }
 
 // buildRequestContextRulesSection 构造 <rules> 片段。

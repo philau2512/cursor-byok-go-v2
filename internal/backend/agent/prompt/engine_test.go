@@ -602,3 +602,46 @@ func TestMergeLocalAgentRulesCacheOnlyOnNewUserMessage(t *testing.T) {
 		t.Fatal("new user message should invalidate cache and pick up Version 2 rule")
 	}
 }
+
+func TestSlashCommandAutoInjectsSkillReminder(t *testing.T) {
+	tempDir := t.TempDir()
+	skillPath := filepath.Join(tempDir, "skills", "brainstorm", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("Brainstorm instructions"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	engine := NewEngine()
+	compiled, err := engine.Compile(CompileInput{
+		Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT,
+		CurrentUserMessageText: "/brainstorm how to design the architecture?",
+		RequestContext: &agentv1.RequestContext{
+			AgentSkills: []*agentv1.AgentSkill{
+				{
+					FullPath:    skillPath,
+					Description: "Brainstorm skill description",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	var promptText string
+	for _, m := range compiled.Messages {
+		promptText += m.Content + "\n"
+	}
+
+	if !strings.Contains(promptText, "<user_query>") {
+		t.Fatal("prompt missing user_query")
+	}
+	if !strings.Contains(promptText, "⚡ Using skill: brainstorm") {
+		t.Fatal("prompt missing expected visual notification: ⚡ Using skill: brainstorm")
+	}
+	if !strings.Contains(promptText, skillPath) {
+		t.Fatal("prompt missing full path to skill file in reminder")
+	}
+}
