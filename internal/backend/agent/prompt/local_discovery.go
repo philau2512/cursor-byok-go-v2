@@ -633,28 +633,24 @@ func mergeLocalAgentRules(requestContext *agentv1.RequestContext) {
 }
 
 type mcpToolFilePayload struct {
-	Description string          `json:"description"`
-	Arguments   json.RawMessage `json:"arguments"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Description string `json:"description"`
 }
 
 var (
 	mcpDescCacheMu sync.RWMutex
-	mcpDescCache   = make(map[string]cachedMcpToolInfo)
+	mcpDescCache   = make(map[string]cachedMcpDesc)
 )
 
-type cachedMcpToolInfo struct {
-	modTime         time.Time
-	description     string
-	inputSchemaJson string
+type cachedMcpDesc struct {
+	modTime     time.Time
+	description string
 }
 
-func readMCPToolDefinition(defPath string) (string, string) {
+func readMCPToolFullDescription(defPath string) string {
 	cleanPath := filepath.Clean(defPath)
 	info, err := os.Stat(cleanPath)
 	if err != nil || info.IsDir() {
-		return "", ""
+		return ""
 	}
 
 	mcpDescCacheMu.RLock()
@@ -662,46 +658,31 @@ func readMCPToolDefinition(defPath string) (string, string) {
 	mcpDescCacheMu.RUnlock()
 
 	if ok && cached.modTime.Equal(info.ModTime()) {
-		return cached.description, cached.inputSchemaJson
+		return cached.description
 	}
 
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return "", ""
+		return ""
 	}
 
 	var payload mcpToolFilePayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return "", ""
+		return ""
 	}
 
 	desc := strings.TrimSpace(payload.Description)
-	rawSchema := payload.Arguments
-	if len(rawSchema) == 0 {
-		rawSchema = payload.InputSchema
-	}
-	if len(rawSchema) == 0 {
-		rawSchema = payload.Parameters
-	}
-	schemaJSON := compactPromptJSON(rawSchema)
-
 	mcpDescCacheMu.Lock()
-	mcpDescCache[cleanPath] = cachedMcpToolInfo{
-		modTime:         info.ModTime(),
-		description:     desc,
-		inputSchemaJson: schemaJSON,
+	mcpDescCache[cleanPath] = cachedMcpDesc{
+		modTime:     info.ModTime(),
+		description: desc,
 	}
 	mcpDescCacheMu.Unlock()
 
-	return desc, schemaJSON
-}
-
-func readMCPToolFullDescription(defPath string) string {
-	desc, _ := readMCPToolDefinition(defPath)
 	return desc
 }
 
-// hydrateLocalMCPDescriptors 从 definition_path 文件或 fallback 规则中自动补齐 MCP 工具的完整 description 与 input_schema。
+// hydrateLocalMCPDescriptors 从 definition_path 文件或 fallback 规则中自动补齐 MCP 工具的完整 description（保持参数 lazy load，不内联 param schema）。
 func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 	if requestContext == nil {
 		return
@@ -724,9 +705,7 @@ func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 			if tool == nil {
 				continue
 			}
-			needDesc := strings.TrimSpace(tool.GetDescription()) == ""
-			needSchema := strings.TrimSpace(tool.GetInputSchemaJson()) == "" && tool.GetInputSchema() == nil
-			if !needDesc && !needSchema {
+			if strings.TrimSpace(tool.GetDescription()) != "" {
 				continue
 			}
 
@@ -735,20 +714,13 @@ func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 				defPath = filepath.Join(folderPath, "tools", tool.GetToolName()+".json")
 			}
 			if defPath != "" {
-				descText, schemaJSON := readMCPToolDefinition(defPath)
-				if needDesc && descText != "" {
+				if descText := readMCPToolFullDescription(defPath); descText != "" {
 					tool.Description = proto.String(descText)
-					needDesc = false
-				}
-				if needSchema && schemaJSON != "" {
-					tool.InputSchemaJson = proto.String(schemaJSON)
-					needSchema = false
+					continue
 				}
 			}
-			if needDesc {
-				if fb := getFallbackMcpToolDescription(serverID, tool.GetToolName()); fb != "" {
-					tool.Description = proto.String(fb)
-				}
+			if fb := getFallbackMcpToolDescription(serverID, tool.GetToolName()); fb != "" {
+				tool.Description = proto.String(fb)
 			}
 		}
 	}
