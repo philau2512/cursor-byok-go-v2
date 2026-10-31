@@ -115,3 +115,20 @@ func TestPruneToolResultToolCallJSONTruncatesLargeShellOutput(t *testing.T) {
 		t.Fatalf("expected middle truncation notice in stdout, got: %s", stdout[:100])
 	}
 }
+
+func TestLimitProjectedToolResultReplayTruncatesAndPrunesLsOutput(t *testing.T) {
+	hugeTree := strings.Repeat("{\"path\": \"/some/deep/file.go\"},\n", 1000) // ~32KB
+	truncated := limitProjectedToolResultReplay("Ls", hugeTree, "", false, false)
+	if len(truncated) > projectedLsReplayLimit+500 {
+		t.Fatalf("expected Ls output truncated to ~%d bytes, got %d", projectedLsReplayLimit, len(truncated))
+	}
+	if !strings.Contains(truncated, "omitted") {
+		t.Fatalf("expected middle truncation notice in Ls output, got: %s", truncated[:200])
+	}
+
+	prunedHistorical := limitProjectedToolResultReplay("Ls", hugeTree, "", false, true)
+	expectedPlaceholder := "[Previous directory listing truncated to save context]"
+	if prunedHistorical != expectedPlaceholder {
+		t.Fatalf("expected historical Ls output pruned to %q, got %q", expectedPlaceholder, prunedHistorical)
+	}
+}

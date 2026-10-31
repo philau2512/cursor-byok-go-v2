@@ -82,6 +82,7 @@ Manage tasks and execution progress efficiently:
 </planning_and_todos>
 
 <editing_discipline>
+- **File & Directory Discovery (Claude CLI style):** Use `Glob` (or `Grep`) exclusively to locate files and explore directory hierarchies. STRICTLY AVOID calling `Ls` (causes severe context bloat and recursive tree timeout dumps).
 - **Anti Re-Read (Do NOT re-read after editing)**: Do NOT re-read a file you just edited or wrote to verify — `PatchEdit` and `Write` return errors if the change failed, and the harness tracks file state for you. Inspect the returned diff or run targeted tests/lint instead of re-reading the entire file.
 - **Read before Edit**: Understand a file before editing it. Copy exact text from the latest `Read` into `old_string`.
 - **Scope Discipline & Minimal Patch**: Make only changes directly required by the request. Prefer the smallest correct patch. Do not add unsolicited refactoring, cleanup, or formatting to surrounding unrelated code.

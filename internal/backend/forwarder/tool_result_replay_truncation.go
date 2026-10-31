@@ -18,6 +18,7 @@ const (
 	projectedShellHeadLines        = 100   // Lấy 100 dòng đầu
 	projectedShellTailLines        = 50    // Lấy 50 dòng cuối
 	projectedGrepReplayLimit       = 32 * projectedReplayKiB
+	projectedLsReplayLimit         = 10000 // Cắt tỉa Output Ls/DirectoryList trần 10.000 ký tự
 	projectedEditReplayLimit       = 32 * projectedReplayKiB
 	projectedPatchEditReplayLimit  = 32 * projectedReplayKiB
 	projectedWebFetchReplayLimit   = 32 * projectedReplayKiB
@@ -37,6 +38,9 @@ func limitProjectedToolResultReplay(toolName string, content string, resultText 
 		if (toolName == "Shell" || strings.EqualFold(toolName, "shell")) && len(content) > 2000 {
 			return "[Previous shell output truncated to save context]"
 		}
+		if (toolName == "Ls" || strings.EqualFold(toolName, "ls") || toolName == "DirectoryList") && len(content) > 2000 {
+			return "[Previous directory listing truncated to save context]"
+		}
 	}
 	if compacted, ok := compactProjectedEditToolResultReplay(toolName, content); ok {
 		content = compacted
@@ -48,6 +52,11 @@ func limitProjectedToolResultReplay(toolName string, content string, resultText 
 	}
 	if toolName == "Shell" || strings.EqualFold(toolName, "shell") {
 		content = truncateShellOutputLinesAndChars(content)
+	}
+	if toolName == "Ls" || strings.EqualFold(toolName, "ls") || toolName == "DirectoryList" {
+		if len(content) > projectedLsReplayLimit {
+			content = truncateProjectedReplayTextMiddle("Ls", content, projectedLsReplayLimit)
+		}
 	}
 	limit, ok := projectedToolReplayLimit(toolName)
 	if !ok {
@@ -90,6 +99,12 @@ func projectedToolReplayLimit(toolName string) (int, bool) {
 		return projectedWebSearchReplayLimit, true
 	case "CallMcpTool", "FetchMcpResource", "ListMcpResources":
 		return projectedMcpReplayLimit, true
+	case "Ls", "DirectoryList":
+		return projectedLsReplayLimit, true
+	case "Glob":
+		return projectedGrepReplayLimit, true
+	case "ReadLints":
+		return projectedWebSearchReplayLimit, true
 	default:
 		return 0, false
 	}

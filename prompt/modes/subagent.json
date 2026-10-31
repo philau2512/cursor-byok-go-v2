@@ -6,7 +6,6 @@
     "Glob",
     "Grep",
     "Read",
-    "Ls",
     "ReadLints",
     "Shell",
     "AwaitShell",

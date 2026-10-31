@@ -235,6 +235,23 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 						continue
 					}
 				}
+				if (toolName == "Ls" || strings.EqualFold(toolName, "ls") || toolName == "DirectoryList") && isHistoricalReplayToolResultDistance(conversation, entry, 6) {
+					contentToTest := payload.ResultText
+					if toolCall != nil {
+						if replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall); ok {
+							contentToTest = replayMessage.Content
+						}
+					}
+					if len(contentToTest) > 2000 {
+						messages = append(messages, modeladapter.Message{
+							Role:       "tool",
+							Name:       toolName,
+							ToolCallID: toolCallID,
+							Content:    "[Previous directory listing truncated to save context]",
+						})
+						continue
+					}
+				}
 				if toolCall != nil {
 					replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall)
 					if ok {

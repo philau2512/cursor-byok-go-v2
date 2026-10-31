@@ -1408,6 +1408,24 @@ func pruneHistoricalShellOutputs(messages []Message, turnThreshold int) []Messag
 			}
 			continue
 		}
+
+		if msg.Role == "tool" && (msg.Name == "Ls" || strings.EqualFold(msg.Name, "ls") || msg.Name == "DirectoryList") {
+			if isOld && len(msg.Content) > 2000 {
+				msg.Content = "[Previous directory listing truncated to save context]"
+			} else if len(msg.Content) > 10000 {
+				msg.Content = truncateShellOutputLinesAndCharsText(msg.Content)
+			}
+			continue
+		}
+
+		if msg.Role == "assistant" && strings.Contains(msg.Content, `<tool_result`) && (strings.Contains(msg.Content, `tool="Ls"`) || strings.Contains(msg.Content, `tool="DirectoryList"`)) {
+			if isOld && len(msg.Content) > 2000 {
+				msg.Content = "<tool_result tool=\"Ls\">\n[Previous directory listing truncated to save context]\n</tool_result>"
+			} else if len(msg.Content) > 10000 {
+				msg.Content = truncateShellOutputLinesAndCharsText(msg.Content)
+			}
+			continue
+		}
 	}
 
 	return messages

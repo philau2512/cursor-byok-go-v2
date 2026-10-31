@@ -145,7 +145,7 @@
     },
     {
       "function": {
-        "description": "\nTool to search for files matching a glob pattern\n\n- Works fast with codebases of any size\n- Returns matching file paths sorted by modification time\n- Primary tool for exploring directory trees: use target_directory and glob_pattern (e.g. \"**/*\") to inspect the full recursive file tree or understand the deep nested structure of a directory or module in a single call.\n- Use this tool when you need to find files by name patterns, extensions, or directory hierarchies.\n- You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches that are potentially useful as a batch.\n",
+        "description": "\nFast file and directory pattern matching tool (Primary exploration tool, modeled after Claude Code CLI).\n\n- Works fast with codebases of any size.\n- Returns matching file paths sorted by modification time.\n- Primary tool for finding files and exploring directory hierarchies: use target_directory and glob_pattern (e.g. \"*\" for immediate contents, \"**/*\" for nested trees, or \"**/*.go\") to inspect directories or modules safely without context bloat.\n- Always prefer Glob over Ls for discovering files and inspecting folder structure.\n- You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches that are potentially useful as a batch.\n",
         "name": "Glob",
         "parameters": {
           "properties": {
@@ -265,7 +265,7 @@
     },
     {
       "function": {
-        "description": "Lists files and directories under a directory path.\n\nUse this tool only when you need immediate children (1 level) of a directory without recursion.\nWhen you need to view the full recursive file tree or understand the deep nested structure of a directory or module, prefer Glob with a recursive pattern (e.g. target_directory: \"path/to/dir\", glob_pattern: \"**/*\") instead of issuing repetitive Ls calls on every subfolder.\n\nYou may provide ignore globs for large or irrelevant directories such as .git, node_modules, dist, build, .cursor-local-assistant-v2/history, or logs.",
+        "description": "DEPRECATED: DO NOT USE. Use Glob instead for all file and directory exploration (Claude Code CLI style).\nCalling Ls on project or workspace directories triggers recursive directory tree traversals that cause massive context bloat (over 40,000+ tokens) and timeouts.\nAlways use Glob (e.g. target_directory: \"path\", glob_pattern: \"*\") to discover files and directories safely.",
         "name": "Ls",
         "parameters": {
           "properties": {
