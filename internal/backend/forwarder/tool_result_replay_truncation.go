@@ -11,9 +11,12 @@ const (
 	projectedReplayKiB = 1024
 
 	projectedReadReplayLimit       = 64 * projectedReplayKiB
-	projectedShellReplayLimit      = 128 * projectedReplayKiB
-	projectedShellStreamLimit      = 16 * projectedReplayKiB
-	projectedShellInterleavedLimit = 32 * projectedReplayKiB
+	projectedShellReplayLimit      = 10000 // Cắt tỉa Output Shell trần 10.000 ký tự
+	projectedShellStreamLimit      = 10000 // 10.000 ký tự cho stdout/stderr
+	projectedShellInterleavedLimit = 10000 // 10.000 ký tự cho interleaved output
+	projectedShellMaxLines         = 250   // Trần 250 dòng
+	projectedShellHeadLines        = 100   // Lấy 100 dòng đầu
+	projectedShellTailLines        = 50    // Lấy 50 dòng cuối
 	projectedGrepReplayLimit       = 32 * projectedReplayKiB
 	projectedEditReplayLimit       = 32 * projectedReplayKiB
 	projectedPatchEditReplayLimit  = 32 * projectedReplayKiB
@@ -31,6 +34,9 @@ func limitProjectedToolResultReplay(toolName string, content string, resultText 
 			content = compacted
 			fromStoredToolCall = false
 		}
+		if (toolName == "Shell" || strings.EqualFold(toolName, "shell")) && len(content) > 2000 {
+			return "[Previous shell output truncated to save context]"
+		}
 	}
 	if compacted, ok := compactProjectedEditToolResultReplay(toolName, content); ok {
 		content = compacted
@@ -39,6 +45,9 @@ func limitProjectedToolResultReplay(toolName string, content string, resultText 
 	if compacted, ok := compactProjectedShellToolResultReplay(toolName, content); ok {
 		content = compacted
 		fromStoredToolCall = false
+	}
+	if toolName == "Shell" || strings.EqualFold(toolName, "shell") {
+		content = truncateShellOutputLinesAndChars(content)
 	}
 	limit, ok := projectedToolReplayLimit(toolName)
 	if !ok {
@@ -182,15 +191,8 @@ func compactProjectedShellFields(value any) bool {
 		for key, child := range item {
 			if text, ok := child.(string); ok {
 				switch key {
-				case "stdout", "stderr":
-					next := truncateProjectedReplayTextMiddle("Shell "+key, text, projectedShellStreamLimit)
-					if next != text {
-						item[key] = next
-						changed = true
-					}
-					continue
-				case "interleaved_output", "interleavedOutput":
-					next := truncateProjectedReplayTextMiddle("Shell interleaved output", text, projectedShellInterleavedLimit)
+				case "stdout", "stderr", "interleaved_output", "interleavedOutput":
+					next := truncateShellOutputLinesAndChars(text)
 					if next != text {
 						item[key] = next
 						changed = true
@@ -210,6 +212,51 @@ func compactProjectedShellFields(value any) bool {
 		}
 	}
 	return changed
+}
+
+// truncateShellOutputLinesAndChars 对 Shell 输出执行双重截断保护：
+// 1. Dòng limit: Tối đa 250 dòng (lấy 100 dòng đầu + 50 dòng cuối kèm thông báo)
+// 2. Ký tự limit: Tối đa 10.000 ký tự (tránh các dòng cực dài làm phình context)
+func truncateShellOutputLinesAndChars(text string) string {
+	if text == "" {
+		return text
+	}
+
+	lines := strings.Split(text, "\n")
+	totalLines := len(lines)
+	totalChars := len(text)
+
+	if totalChars <= projectedShellReplayLimit && totalLines <= projectedShellMaxLines {
+		return text
+	}
+
+	// 1. Cắt tỉa theo dòng nếu vượt quá 250 dòng
+	if totalLines > projectedShellMaxLines {
+		head := lines[:projectedShellHeadLines]
+		tail := lines[totalLines-projectedShellTailLines:]
+		omitted := totalLines - (projectedShellHeadLines + projectedShellTailLines)
+		notice := fmt.Sprintf("\n\n[... Output truncated: Total %d lines (%d bytes); omitted %d lines in middle. Use head/grep/tail to view specific parts ...]\n\n", totalLines, totalChars, omitted)
+		truncated := strings.Join(head, "\n") + notice + strings.Join(tail, "\n")
+		if len(truncated) <= projectedShellReplayLimit {
+			return truncated
+		}
+		text = truncated
+		totalChars = len(text)
+	}
+
+	// 2. Cắt tỉa theo ký tự ở giữa nếu chuỗi vẫn vượt quá 10.000 ký tự (ví dụ mỗi dòng quá dài)
+	if totalChars > projectedShellReplayLimit {
+		headChars := 6000
+		tailChars := 3000
+		if len(text) > headChars+tailChars {
+			notice := fmt.Sprintf("\n\n[... Output truncated: Total %d lines (%d bytes); omitted middle. Use head/grep/tail to view specific parts ...]\n\n", totalLines, totalChars)
+			head := truncateProjectedUTF8(text, headChars)
+			tail := truncateProjectedUTF8Suffix(text, tailChars)
+			return head + notice + tail
+		}
+	}
+
+	return text
 }
 
 func compactProjectedEditToolResultReplay(toolName string, content string) (string, bool) {

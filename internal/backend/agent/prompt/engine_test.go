@@ -1,6 +1,8 @@
 package promptengine
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -645,3 +647,69 @@ func TestSlashCommandAutoInjectsSkillReminder(t *testing.T) {
 		t.Fatal("prompt missing full path to skill file in reminder")
 	}
 }
+
+func TestPruneHistoricalShellOutputs(t *testing.T) {
+	// Create a sequence of 8 user turns
+	var messages []Message
+	for i := 1; i <= 8; i++ {
+		// User message
+		messages = append(messages, Message{
+			Role:    "user",
+			Content: fmt.Sprintf("User query turn %d", i),
+		})
+		// Assistant message with a Shell tool call
+		callID := fmt.Sprintf("call_shell_%d", i)
+		cmd := fmt.Sprintf("git diff origin/dev -- file%d.go", i)
+		argsJSON, _ := json.Marshal(map[string]string{"command": cmd})
+		messages = append(messages, Message{
+			Role: "assistant",
+			ToolCalls: []ToolCallDescriptor{
+				{
+					ID:   callID,
+					Type: "function",
+					Function: ToolCallFunctionShape{
+						Name:      "Shell",
+						Arguments: string(argsJSON),
+					},
+				},
+			},
+		})
+		// Tool response with 5000 chars of output
+		longOutput := strings.Repeat(fmt.Sprintf("diff line %d\n", i), 300)
+		messages = append(messages, Message{
+			Role:       "tool",
+			Name:       "Shell",
+			ToolCallID: callID,
+			Content:    longOutput,
+		})
+	}
+
+	pruned := pruneHistoricalShellOutputs(messages, 6)
+
+	// In 8 turns, turns 1 and 2 are > 6 turns older than the latest turn 8 (8 - 6 = 2)
+	// Turn 1 tool result should be pruned
+	foundTurn1Pruned := false
+	for _, m := range pruned {
+		if m.ToolCallID == "call_shell_1" {
+			if strings.Contains(m.Content, `[Previous shell output of "git diff origin/dev -- file1.go" truncated to save context]`) {
+				foundTurn1Pruned = true
+			}
+		}
+	}
+	if !foundTurn1Pruned {
+		t.Fatalf("expected turn 1 shell output to be pruned to context placeholder, got messages: %+v", pruned)
+	}
+
+	// Recent turn 8 tool result should NOT be replaced by the historical placeholder, but truncated by lines/chars filter
+	for _, m := range pruned {
+		if m.ToolCallID == "call_shell_8" {
+			if strings.Contains(m.Content, "[Previous shell output") {
+				t.Fatalf("turn 8 is recent and should not be replaced by historical placeholder")
+			}
+			if !strings.Contains(m.Content, "Output truncated: Total 301 lines") {
+				t.Fatalf("turn 8 should have line-based truncation, got: %s", m.Content[:200])
+			}
+		}
+	}
+}
+
