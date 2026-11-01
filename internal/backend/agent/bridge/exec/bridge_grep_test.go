@@ -85,3 +85,46 @@ func TestDecodeGrepToolArgsWindowsOptimization(t *testing.T) {
 func boolPtr(v bool) *bool {
 	return &v
 }
+
+func TestNormalizeGlobResultFilePath(t *testing.T) {
+	tests := []struct {
+		name      string
+		targetDir string
+		filePath  string
+		want      string
+	}{
+		{
+			name:      "windows overlap removal",
+			targetDir: `d:\Admin\Documents\PROJECTS\conruabien\sea-turtle-crm-app\src`,
+			filePath:  `sea-turtle-crm-app\src\components\pages\quote\QuoteList\QuotationRow.tsx`,
+			want:      `components\pages\quote\QuoteList\QuotationRow.tsx`,
+		},
+		{
+			name:      "posix overlap removal",
+			targetDir: "/home/user/project/frontend/src",
+			filePath:  "frontend/src/utils/helpers.ts",
+			want:      "utils/helpers.ts",
+		},
+		{
+			name:      "no overlap returns original",
+			targetDir: `C:\project\src`,
+			filePath:  `components\Button.tsx`,
+			want:      `components\Button.tsx`,
+		},
+		{
+			name:      "empty target returns original",
+			targetDir: "",
+			filePath:  `src\index.ts`,
+			want:      `src\index.ts`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeGlobResultFilePath(tt.targetDir, tt.filePath)
+			if got != tt.want {
+				t.Errorf("normalizeGlobResultFilePath(%q, %q) = %q, want %q", tt.targetDir, tt.filePath, got, tt.want)
+			}
+		})
+	}
+}

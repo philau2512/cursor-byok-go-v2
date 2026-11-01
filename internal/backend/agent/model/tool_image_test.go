@@ -65,6 +65,16 @@ func TestToolImageProviderEncodings(t *testing.T) {
 			t.Fatalf("anthropic content blocks = %#v", content)
 		}
 	})
+
+	t.Run("anthropic_no_relocate_by_default", func(t *testing.T) {
+		if shouldRelocateAnthropicImages("https://my-proxy.com") {
+			t.Fatalf("expected shouldRelocateAnthropicImages to return false by default")
+		}
+		t.Setenv("ANTHROPIC_RELOCATE_IMAGES", "1")
+		if !shouldRelocateAnthropicImages("https://my-proxy.com") {
+			t.Fatalf("expected shouldRelocateAnthropicImages to return true when env is 1")
+		}
+	})
 }
 
 func toolImageMessageForTest() Message {
