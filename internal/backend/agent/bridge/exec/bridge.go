@@ -1279,10 +1279,14 @@ func summarizeGlobContinuationPayload(result *agentv1.GrepResult, argsJSON []byt
 	if filesResult == nil || len(filesResult.GetFiles()) == 0 {
 		return formatGlobNoMatches(pattern, target)
 	}
-	files := filesResult.GetFiles()
-	text := strings.Join(files, "\n")
-	if total := int(filesResult.GetTotalFiles()); total > len(files) {
-		text += fmt.Sprintf("\n...there are still %d files...", total-len(files))
+	rawFiles := filesResult.GetFiles()
+	normalizedFiles := make([]string, 0, len(rawFiles))
+	for _, f := range rawFiles {
+		normalizedFiles = append(normalizedFiles, normalizeGlobResultFilePath(target, f))
+	}
+	text := strings.Join(normalizedFiles, "\n")
+	if total := int(filesResult.GetTotalFiles()); total > len(normalizedFiles) {
+		text += fmt.Sprintf("\n...there are still %d files...", total-len(normalizedFiles))
 	}
 	return text
 }
@@ -2509,12 +2513,18 @@ func convertGrepResultToGlobToolResult(result *agentv1.GrepResult, args map[stri
 				},
 			}
 		}
+		targetDir := readGlobTargetDirectoryArg(args)
+		rawFiles := filesResult.GetFiles()
+		normalizedFiles := make([]string, 0, len(rawFiles))
+		for _, f := range rawFiles {
+			normalizedFiles = append(normalizedFiles, normalizeGlobResultFilePath(targetDir, f))
+		}
 		return &agentv1.GlobToolResult{
 			Result: &agentv1.GlobToolResult_Success{
 				Success: &agentv1.GlobToolSuccess{
 					Pattern:          readGlobPatternArg(args),
-					Path:             readGlobTargetDirectoryArg(args),
-					Files:            append([]string(nil), filesResult.GetFiles()...),
+					Path:             targetDir,
+					Files:            normalizedFiles,
 					TotalFiles:       filesResult.GetTotalFiles(),
 					ClientTruncated:  filesResult.GetClientTruncated(),
 					RipgrepTruncated: filesResult.GetRipgrepTruncated(),
@@ -2534,6 +2544,60 @@ func convertGrepResultToGlobToolResult(result *agentv1.GrepResult, args map[stri
 			},
 		}
 	}
+}
+
+// normalizeGlobResultFilePath 消除 targetDirectory 与 ripgrep 相对 workspaceRoot 返回路径之间的重叠前缀。
+// 例如：targetDirectory 为 "D:\project\app\src"，而 ripgrep 返回 "app\src\components\Row.tsx" 时，
+// 消除重复的 "app\src"，确保 UI 拼接 "targetDirectory + file" 时能准确指向真实文件并可在 IDE 中直接点击跳转。
+func normalizeGlobResultFilePath(targetDir string, filePath string) string {
+	trimmedFile := strings.TrimSpace(filePath)
+	trimmedTarget := strings.TrimSpace(targetDir)
+	if trimmedFile == "" || trimmedTarget == "" {
+		return trimmedFile
+	}
+
+	if filepath.IsAbs(trimmedFile) || (len(trimmedFile) > 2 && trimmedFile[1] == ':') || strings.HasPrefix(trimmedFile, `\\`) || strings.HasPrefix(trimmedFile, "//") {
+		if rel, err := filepath.Rel(trimmedTarget, trimmedFile); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+		return trimmedFile
+	}
+
+	cleanTarget := strings.ReplaceAll(trimmedTarget, "\\", "/")
+	cleanFile := strings.ReplaceAll(trimmedFile, "\\", "/")
+
+	targetParts := strings.FieldsFunc(cleanTarget, func(r rune) bool { return r == '/' })
+	fileParts := strings.FieldsFunc(cleanFile, func(r rune) bool { return r == '/' })
+
+	maxOverlap := len(targetParts)
+	if len(fileParts) < maxOverlap {
+		maxOverlap = len(fileParts)
+	}
+
+	overlapLen := 0
+	for k := maxOverlap; k > 0; k-- {
+		match := true
+		for i := 0; i < k; i++ {
+			if !strings.EqualFold(targetParts[len(targetParts)-k+i], fileParts[i]) {
+				match = false
+				break
+			}
+		}
+		if match {
+			overlapLen = k
+			break
+		}
+	}
+
+	if overlapLen > 0 {
+		sep := "/"
+		if strings.Contains(trimmedFile, "\\") {
+			sep = "\\"
+		}
+		return strings.Join(fileParts[overlapLen:], sep)
+	}
+
+	return trimmedFile
 }
 
 func truncateGlobResultForReplay(result *agentv1.GrepResult) *agentv1.GrepResult {

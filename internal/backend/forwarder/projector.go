@@ -210,6 +210,48 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 				if isLegacyPlainWriteReplay(toolName, len(payload.ToolCall) > 0) {
 					continue
 				}
+				if (toolName == "Shell" || strings.EqualFold(toolName, "shell")) && isHistoricalReplayToolResultDistance(conversation, entry, 6) {
+					contentToTest := payload.ResultText
+					if toolCall != nil {
+						if replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall); ok {
+							contentToTest = replayMessage.Content
+						}
+					}
+					if len(contentToTest) > 2000 {
+						cmd := extractShellCommandFromArgs(payload.Arguments)
+						if len(cmd) > 60 {
+							cmd = cmd[:60] + "..."
+						}
+						prunedText := "[Previous shell output truncated to save context]"
+						if cmd != "" {
+							prunedText = fmt.Sprintf("[Previous shell output of %q truncated to save context]", cmd)
+						}
+						messages = append(messages, modeladapter.Message{
+							Role:       "tool",
+							Name:       toolName,
+							ToolCallID: toolCallID,
+							Content:    prunedText,
+						})
+						continue
+					}
+				}
+				if (toolName == "Ls" || strings.EqualFold(toolName, "ls") || toolName == "DirectoryList") && isHistoricalReplayToolResultDistance(conversation, entry, 6) {
+					contentToTest := payload.ResultText
+					if toolCall != nil {
+						if replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall); ok {
+							contentToTest = replayMessage.Content
+						}
+					}
+					if len(contentToTest) > 2000 {
+						messages = append(messages, modeladapter.Message{
+							Role:       "tool",
+							Name:       toolName,
+							ToolCallID: toolCallID,
+							Content:    "[Previous directory listing truncated to save context]",
+						})
+						continue
+					}
+				}
 				if toolCall != nil {
 					replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall)
 					if ok {
@@ -530,6 +572,27 @@ func isHistoricalReplayToolResult(conversation *ConversationFile, entry HistoryE
 	}
 	currentTurnSeq := conversation.NextTurnSeq - 1
 	return currentTurnSeq > 0 && entry.TurnSeq < currentTurnSeq
+}
+
+func isHistoricalReplayToolResultDistance(conversation *ConversationFile, entry HistoryEntry, threshold int64) bool {
+	if conversation == nil || entry.TurnSeq <= 0 {
+		return false
+	}
+	currentTurnSeq := conversation.NextTurnSeq - 1
+	return currentTurnSeq > 0 && (currentTurnSeq-entry.TurnSeq) >= threshold
+}
+
+func extractShellCommandFromArgs(argsStr string) string {
+	if strings.TrimSpace(argsStr) == "" {
+		return ""
+	}
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(argsStr), &args); err == nil {
+		return strings.TrimSpace(args.Command)
+	}
+	return ""
 }
 
 // ProjectLegacyCheckpoint 按需从 JSON history 投影出兼容旧客户端的 checkpoint 结构。

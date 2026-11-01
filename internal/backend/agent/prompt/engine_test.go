@@ -1,6 +1,8 @@
 package promptengine
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,7 +210,17 @@ func TestHydrateLocalMCPDescriptorsFullDescription(t *testing.T) {
 	toolDefPath := filepath.Join(tempDir, "InspectChanges.json")
 	toolJSON := `{
 		"name": "InspectChanges",
-		"description": "Inspects uncommitted Git changes (status and diff) with structured summaries."
+		"description": "Inspects uncommitted Git changes (status and diff) with structured summaries.",
+		"arguments": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string",
+					"description": "Path to inspect"
+				}
+			},
+			"required": ["path"]
+		}
 	}`
 	if err := os.WriteFile(toolDefPath, []byte(toolJSON), 0644); err != nil {
 		t.Fatalf("write tool json: %v", err)
@@ -264,11 +276,72 @@ func TestHydrateLocalMCPDescriptorsFullDescription(t *testing.T) {
 	if !strings.Contains(prompt, "<description>Inspects uncommitted Git changes (status and diff) with structured summaries.</description>") {
 		t.Fatal("compiled prompt missing hydrated full description for InspectChanges")
 	}
+	if strings.Contains(prompt, "<input_schema>") {
+		t.Fatal("compiled prompt should not contain inline input_schema (should be lazy loaded via definition_path)")
+	}
 	if !strings.Contains(prompt, `<mcp_tool name="fast_context_search">`) {
 		t.Fatal("compiled prompt missing fast_context_search tool")
 	}
 	if !strings.Contains(prompt, "Fast semantic codebase search and context discovery") {
 		t.Fatal("compiled prompt missing fallback description for fast_context_search in mcp_file_system")
+	}
+}
+
+func TestHydrateLocalMCPDescriptorsLazyLoadPreservesDescription(t *testing.T) {
+	tempDir := t.TempDir()
+	toolDefPath := filepath.Join(tempDir, "query.json")
+	toolJSON := `{
+		"name": "query",
+		"description": "File description",
+		"arguments": {
+			"type": "object",
+			"properties": {
+				"sql": {
+					"type": "string"
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(toolDefPath, []byte(toolJSON), 0644); err != nil {
+		t.Fatalf("write tool json: %v", err)
+	}
+
+	compiled, err := NewEngine().Compile(CompileInput{
+		Mode: agentv1.AgentMode_AGENT_MODE_AGENT,
+		RequestContext: &agentv1.RequestContext{
+			McpMetaToolOptions: &agentv1.McpMetaToolOptions{
+				Enabled: true,
+				McpDescriptors: []*agentv1.McpDescriptor{
+					{
+						ServerIdentifier: "user-gridex",
+						ServerName:       "gridex",
+						Tools: []*agentv1.McpToolDescriptor{
+							{
+								ToolName:       "query",
+								Description:    proto.String("Pre-existing client description"),
+								DefinitionPath: proto.String(toolDefPath),
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	joined := make([]string, 0, len(compiled.Messages))
+	for _, message := range compiled.Messages {
+		joined = append(joined, message.Content)
+	}
+	prompt := strings.Join(joined, "\n")
+
+	if !strings.Contains(prompt, "<description>Pre-existing client description</description>") {
+		t.Fatal("compiled prompt should preserve pre-existing client description")
+	}
+	if strings.Contains(prompt, "<input_schema>") {
+		t.Fatal("compiled prompt should not contain inline input_schema for lazy loaded tools")
 	}
 }
 
@@ -531,3 +604,112 @@ func TestMergeLocalAgentRulesCacheOnlyOnNewUserMessage(t *testing.T) {
 		t.Fatal("new user message should invalidate cache and pick up Version 2 rule")
 	}
 }
+
+func TestSlashCommandAutoInjectsSkillReminder(t *testing.T) {
+	tempDir := t.TempDir()
+	skillPath := filepath.Join(tempDir, "skills", "brainstorm", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("Brainstorm instructions"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	engine := NewEngine()
+	compiled, err := engine.Compile(CompileInput{
+		Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT,
+		CurrentUserMessageText: "/brainstorm how to design the architecture?",
+		RequestContext: &agentv1.RequestContext{
+			AgentSkills: []*agentv1.AgentSkill{
+				{
+					FullPath:    skillPath,
+					Description: "Brainstorm skill description",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	var promptText string
+	for _, m := range compiled.Messages {
+		promptText += m.Content + "\n"
+	}
+
+	if !strings.Contains(promptText, "<user_query>") {
+		t.Fatal("prompt missing user_query")
+	}
+	if !strings.Contains(promptText, "⚡ Using skill: brainstorm") {
+		t.Fatal("prompt missing expected visual notification: ⚡ Using skill: brainstorm")
+	}
+	if !strings.Contains(promptText, skillPath) {
+		t.Fatal("prompt missing full path to skill file in reminder")
+	}
+}
+
+func TestPruneHistoricalShellOutputs(t *testing.T) {
+	// Create a sequence of 8 user turns
+	var messages []Message
+	for i := 1; i <= 8; i++ {
+		// User message
+		messages = append(messages, Message{
+			Role:    "user",
+			Content: fmt.Sprintf("User query turn %d", i),
+		})
+		// Assistant message with a Shell tool call
+		callID := fmt.Sprintf("call_shell_%d", i)
+		cmd := fmt.Sprintf("git diff origin/dev -- file%d.go", i)
+		argsJSON, _ := json.Marshal(map[string]string{"command": cmd})
+		messages = append(messages, Message{
+			Role: "assistant",
+			ToolCalls: []ToolCallDescriptor{
+				{
+					ID:   callID,
+					Type: "function",
+					Function: ToolCallFunctionShape{
+						Name:      "Shell",
+						Arguments: string(argsJSON),
+					},
+				},
+			},
+		})
+		// Tool response with 5000 chars of output
+		longOutput := strings.Repeat(fmt.Sprintf("diff line %d\n", i), 300)
+		messages = append(messages, Message{
+			Role:       "tool",
+			Name:       "Shell",
+			ToolCallID: callID,
+			Content:    longOutput,
+		})
+	}
+
+	pruned := pruneHistoricalShellOutputs(messages, 6)
+
+	// In 8 turns, turns 1 and 2 are > 6 turns older than the latest turn 8 (8 - 6 = 2)
+	// Turn 1 tool result should be pruned
+	foundTurn1Pruned := false
+	for _, m := range pruned {
+		if m.ToolCallID == "call_shell_1" {
+			if strings.Contains(m.Content, `[Previous shell output of "git diff origin/dev -- file1.go" truncated to save context]`) {
+				foundTurn1Pruned = true
+			}
+		}
+	}
+	if !foundTurn1Pruned {
+		t.Fatalf("expected turn 1 shell output to be pruned to context placeholder, got messages: %+v", pruned)
+	}
+
+	// Recent turn 8 tool result should NOT be replaced by the historical placeholder, but truncated by lines/chars filter
+	for _, m := range pruned {
+		if m.ToolCallID == "call_shell_8" {
+			if strings.Contains(m.Content, "[Previous shell output") {
+				t.Fatalf("turn 8 is recent and should not be replaced by historical placeholder")
+			}
+			if !strings.Contains(m.Content, "Output truncated: Total 301 lines") {
+				t.Fatalf("turn 8 should have line-based truncation, got: %s", m.Content[:200])
+			}
+		}
+	}
+}
+

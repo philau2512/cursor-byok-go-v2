@@ -136,6 +136,7 @@ func TestConversationFileStoreSyncsCursorTranscript(t *testing.T) {
 		t.Fatalf("persisted transcript folder = %q", persisted.AgentTranscriptsFolder)
 	}
 
+	store.WaitTranscriptSync()
 	path := filepath.Join(transcriptsFolder, conversation.ConversationID, conversation.ConversationID+".jsonl")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -182,6 +183,7 @@ func TestConversationFileStoreDefersCursorTranscriptSyncUntilTurnEnds(t *testing
 		t.Fatalf("AppendEntries() terminal metadata error = %v", err)
 	}
 
+	store.WaitTranscriptSync()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read terminal transcript: %v", err)
@@ -226,6 +228,7 @@ func TestConversationFileStorePreservesCursorAppendedTurnEnded(t *testing.T) {
 		t.Fatalf("SaveConversationWithEntries() error = %v", err)
 	}
 
+	store.WaitTranscriptSync()
 	path := filepath.Join(transcriptsFolder, conversation.ConversationID, conversation.ConversationID+".jsonl")
 	existing, err := os.ReadFile(path)
 	if err != nil {

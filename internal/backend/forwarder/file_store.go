@@ -52,9 +52,12 @@ type cachedConversationEntries struct {
 }
 
 type ConversationFileStore struct {
-	root         string
-	cacheMu      sync.RWMutex
-	entriesCache map[string]cachedConversationEntries
+	root               string
+	cacheMu            sync.RWMutex
+	entriesCache       map[string]cachedConversationEntries
+	transcriptMu       sync.Mutex
+	transcriptVersions map[string]int64
+	transcriptSyncWg   sync.WaitGroup
 }
 
 type conversationContextFile struct {
@@ -68,9 +71,18 @@ type conversationContextFile struct {
 // NewConversationFileStore 创建 JSON history 文件存储。
 func NewConversationFileStore(historyRoot string) *ConversationFileStore {
 	return &ConversationFileStore{
-		root:         strings.TrimSpace(historyRoot),
-		entriesCache: make(map[string]cachedConversationEntries),
+		root:               strings.TrimSpace(historyRoot),
+		entriesCache:       make(map[string]cachedConversationEntries),
+		transcriptVersions: make(map[string]int64),
 	}
+}
+
+// WaitTranscriptSync 等待所有后台 transcript 同步任务完成，主要用于测试或需要确保落盘的时机。
+func (store *ConversationFileStore) WaitTranscriptSync() {
+	if store == nil {
+		return
+	}
+	store.transcriptSyncWg.Wait()
 }
 
 func (store *ConversationFileStore) updateCacheLocked(conversationID string, contextVersion int64, entries []HistoryEntry) {
@@ -272,9 +284,9 @@ func (store *ConversationFileStore) SaveConversationWithEntries(conversationID s
 		}
 	}
 	mergeConversationMetadata(conversation, source)
-	appendEntriesInPlace(conversation, resetEntrySequences(entries))
+	assigned := appendEntriesInPlace(conversation, resetEntrySequences(entries))
 	deriveConversationLoopState(conversation)
-	if err := store.writeConversationLocked(normalizedConversationID, conversation); err != nil {
+	if err := store.appendConversationEntriesLocked(normalizedConversationID, conversation, assigned); err != nil {
 		return nil, err
 	}
 	return cloneConversationFile(conversation), nil
@@ -585,10 +597,9 @@ func (store *ConversationFileStore) writeConversationMetaLocked(conversationID s
 	if err := refreshConversationRuntimeState(conversation); err != nil {
 		return err
 	}
-	metadata := cloneConversationFile(conversation)
+	metadata := cloneConversationMetadata(conversation)
 	metadata.SchemaVersion = conversationSchemaVersion
 	metadata.ContextVersion = contextVersionForEntries(conversation.Entries)
-	metadata.Entries = nil
 	return writeJSONFileAtomic(store.statePath(conversationID), metadata)
 }
 
@@ -769,9 +780,29 @@ func (store *ConversationFileStore) syncCursorTranscriptBestEffort(conversationI
 	if folder == "" {
 		return
 	}
-	if err := store.syncCursorTranscript(conversationID, conversation, folder); err != nil {
-		log.Printf("forwarder transcript sync failed conversation_id=%s err=%v", strings.TrimSpace(conversationID), err)
-	}
+	snapshot := cloneConversationFile(conversation)
+	targetVersion := snapshot.ContextVersion
+
+	store.transcriptSyncWg.Add(1)
+	go func() {
+		defer store.transcriptSyncWg.Done()
+
+		store.transcriptMu.Lock()
+		defer store.transcriptMu.Unlock()
+
+		if store.transcriptVersions == nil {
+			store.transcriptVersions = make(map[string]int64)
+		}
+		if lastVersion, exists := store.transcriptVersions[conversationID]; exists && targetVersion < lastVersion {
+			return
+		}
+
+		if err := store.syncCursorTranscript(conversationID, snapshot, folder); err != nil {
+			log.Printf("forwarder transcript sync failed conversation_id=%s err=%v", strings.TrimSpace(conversationID), err)
+			return
+		}
+		store.transcriptVersions[conversationID] = targetVersion
+	}()
 }
 
 func (store *ConversationFileStore) syncCursorTranscript(conversationID string, conversation *ConversationFile, transcriptsFolder string) error {
@@ -1162,6 +1193,21 @@ func cloneConversationFile(conversation *ConversationFile) *ConversationFile {
 	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
 	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
 	cloned.Entries = append([]HistoryEntry(nil), conversation.Entries...)
+	return &cloned
+}
+
+func cloneConversationMetadata(conversation *ConversationFile) *ConversationFile {
+	if conversation == nil {
+		return nil
+	}
+	cloned := *conversation
+	cloned.CurrentPlans = clonePlanRegistryEntries(conversation.CurrentPlans)
+	cloned.CurrentTodos = cloneTodoItems(conversation.CurrentTodos)
+	cloned.MCPToolServers = cloneStringMap(conversation.MCPToolServers)
+	cloned.ImportedTurnIDs = cloneByteSlices(conversation.ImportedTurnIDs)
+	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
+	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
+	cloned.Entries = nil
 	return &cloned
 }
 

@@ -682,7 +682,7 @@ func readMCPToolFullDescription(defPath string) string {
 	return desc
 }
 
-// hydrateLocalMCPDescriptors 从 definition_path 文件或 fallback 规则中自动补齐 MCP 工具的完整 description。
+// hydrateLocalMCPDescriptors 从 definition_path 文件或 fallback 规则中自动补齐 MCP 工具的完整 description（保持参数 lazy load，不内联 param schema）。
 func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 	if requestContext == nil {
 		return
@@ -708,6 +708,7 @@ func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 			if strings.TrimSpace(tool.GetDescription()) != "" {
 				continue
 			}
+
 			defPath := strings.TrimSpace(tool.GetDefinitionPath())
 			if defPath == "" && folderPath != "" {
 				defPath = filepath.Join(folderPath, "tools", tool.GetToolName()+".json")

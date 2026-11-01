@@ -153,12 +153,12 @@ func TestSubagentToolsCatalogSchema(t *testing.T) {
 	for _, tool := range tools {
 		toolNames[tool.Function.Name] = true
 	}
-	for _, required := range []string{"PatchEdit", "Write", "Delete", "Shell", "Glob", "Grep", "Read", "Ls", "ReadLints", "Task"} {
+	for _, required := range []string{"PatchEdit", "Write", "Delete", "Shell", "Glob", "Grep", "Read", "ReadLints", "Task"} {
 		if !toolNames[required] {
 			t.Fatalf("subagent tools.json missing expected tool %q", required)
 		}
 	}
-	for _, disallowed := range []string{"AskQuestion", "SwitchMode"} {
+	for _, disallowed := range []string{"AskQuestion", "SwitchMode", "Ls"} {
 		if toolNames[disallowed] {
 			t.Fatalf("subagent tools.json unexpectedly contains disallowed tool %q", disallowed)
 		}

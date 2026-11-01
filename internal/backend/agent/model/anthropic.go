@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -158,14 +159,16 @@ func anthropicEndpointURL(baseURL string) string {
 
 // shouldRelocateAnthropicImages 判断是否需要把图片块搬运到末条 user 消息。
 //
-// 官方 Anthropic 端点（api.anthropic.com）可正确处理任意位置的图片，保持原样；
-// 其余第三方中转站默认启用搬运，规避「非末尾图片被丢弃」的转换问题。
+// 注意：默认必须关闭搬运（返回 false），原因如下：
+// 1. 搬运会将历史所有轮次图片移到末尾，彻底破坏 Anthropic / Bedrock 的 KV Prompt Caching（导致 100% Cache Miss 和数十秒的 TTFT 延迟）。
+// 2. 搬运会导致当前 turn 的 user message 累积数十张历史旧图，严重浪费 token 并干扰模型注意力。
+// 现代中转网关（OpenRouter、OneAPI、NewAPI、Cloudflare 等）均已原生支持多轮对话图片，保持图片在原轮次可获得极佳的 Prompt Cache 命中率。
+// 如遇极少数老旧代理需要搬运，可通过环境变量 ANTHROPIC_RELOCATE_IMAGES=1 显式开启。
 func shouldRelocateAnthropicImages(baseURL string) bool {
-	base := strings.ToLower(strings.TrimSpace(baseURL))
-	if base == "" {
-		return false
+	if val := strings.TrimSpace(os.Getenv("ANTHROPIC_RELOCATE_IMAGES")); val != "" {
+		return val == "1" || strings.EqualFold(val, "true")
 	}
-	return !strings.Contains(base, "api.anthropic.com")
+	return false
 }
 
 // ApplyAnthropicCompatibleAuthHeaders 同时兼容 Anthropic 原生 x-api-key 和 Bearer token 代理。

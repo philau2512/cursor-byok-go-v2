@@ -4,6 +4,7 @@ package promptengine
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -227,9 +228,13 @@ func (engine *Engine) Compile(input CompileInput) (CompiledPrompt, error) {
 	messages = append(messages, buildMessagesFromRequestContext(input.RequestContext)...)
 
 	if text := strings.TrimSpace(input.CurrentUserMessageText); text != "" {
+		userContent := fmt.Sprintf("<user_query>\n%s\n</user_query>", text)
+		if skillName, skillPath := detectInvokedSkill(text, input.RequestContext); skillName != "" {
+			userContent += fmt.Sprintf("\n\n<system_reminder>\nThe user explicitly invoked slash command /%s.\nYou MUST declare at the beginning of your response: ⚡ Using skill: %s\nYou MUST immediately call the Read tool on %q as your very first tool call to inspect and follow the skill instructions before taking any other action.\n</system_reminder>", skillName, skillName, skillPath)
+		}
 		messages = append(messages, Message{
 			Role:    "user",
-			Content: formatMessageText(fmt.Sprintf("<user_query>\n%s\n</user_query>", text)),
+			Content: formatMessageText(userContent),
 		})
 	}
 	messages = append(messages, buildMessagesFromPendingAssistantOutputs(input.PendingAssistantOutputs)...)
@@ -246,6 +251,8 @@ func (engine *Engine) Compile(input CompileInput) (CompiledPrompt, error) {
 			})
 		}
 	}
+
+	messages = pruneHistoricalShellOutputs(messages, 6)
 
 	summary := fmt.Sprintf(
 		"mode=%s messages=%d tools=%d hidden_tools=%d tool_names=%s committed_turns=%d pending=%d external_results=%d",
@@ -302,10 +309,6 @@ func buildMessagesFromStructuredState(state *agentv1.ConversationStateStructure)
 		messages = append(messages, Message{
 			Role:    "user",
 			Content: fmt.Sprintf("<todo_list>\n%s\n</todo_list>", todos),
-		})
-		messages = append(messages, Message{
-			Role:    "user",
-			Content: todoSectionReminderMessage,
 		})
 	}
 	return messages
@@ -474,7 +477,7 @@ func buildRequestContextAgentSkillsSection(requestContext *agentv1.RequestContex
 	}
 	lines := []string{
 		"<agent_skills>",
-		"When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge. To use a skill, read the skill file at the provided absolute path using the Read tool, then follow the instructions within. When a skill is relevant, read and follow it IMMEDIATELY as your first action. NEVER just announce or mention a skill without actually reading and following it. Only use skills listed below.",
+		"When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge. To use a skill, read the skill file at the provided absolute path using the Read tool, then follow the instructions within. When a skill is relevant or invoked via slash command, declare '⚡ Using skill: <skill_name>' at the beginning of your response and read the skill file IMMEDIATELY as your first action. NEVER just announce or mention a skill without actually reading and following it. Only use skills listed below.",
 		"",
 		`<available_skills description="Skills the agent can use. Use the Read tool with the provided absolute path to fetch full contents.">`,
 	}
@@ -508,6 +511,75 @@ func buildRequestContextAgentSkillsSection(requestContext *agentv1.RequestContex
 	}
 	lines = append(lines, "</available_skills>", "</agent_skills>")
 	return strings.Join(lines, "\n\n")
+}
+
+// deriveSkillNameFromPath 从技能文件绝对路径中推导技能名称标识符。
+func deriveSkillNameFromPath(fullPath string) string {
+	clean := filepath.Clean(fullPath)
+	base := filepath.Base(clean)
+	if strings.EqualFold(base, "skill.md") {
+		return filepath.Base(filepath.Dir(clean))
+	}
+	ext := filepath.Ext(base)
+	if ext != "" {
+		return strings.TrimSuffix(base, ext)
+	}
+	return base
+}
+
+// detectInvokedSkill 检测用户输入是否显式调用了 Slash Command 形式的技能（例如 /brainstorm 或 /ak-brainstorm）。
+func detectInvokedSkill(userText string, requestContext *agentv1.RequestContext) (name string, path string) {
+	if requestContext == nil || strings.TrimSpace(userText) == "" {
+		return "", ""
+	}
+	text := strings.TrimSpace(userText)
+	fields := strings.Fields(text)
+	var candidateCommands []string
+	for _, f := range fields {
+		if strings.HasPrefix(f, "/") {
+			cmd := strings.Trim(strings.TrimPrefix(f, "/"), ",.;:!?\"'()[]{}")
+			if cmd != "" {
+				candidateCommands = append(candidateCommands, strings.ToLower(cmd))
+			}
+		}
+	}
+	if len(candidateCommands) == 0 {
+		return "", ""
+	}
+
+	for _, skill := range requestContext.GetAgentSkills() {
+		if skill == nil {
+			continue
+		}
+		p := strings.TrimSpace(skill.GetFullPath())
+		if p == "" {
+			continue
+		}
+		sName := deriveSkillNameFromPath(p)
+		sNameLower := strings.ToLower(sName)
+		for _, cmd := range candidateCommands {
+			if cmd == sNameLower || cmd == strings.TrimPrefix(sNameLower, "ak-") || "ak-"+cmd == sNameLower {
+				return sName, p
+			}
+		}
+	}
+	for _, desc := range requestContext.GetSkillOptions().GetSkillDescriptors() {
+		if desc == nil {
+			continue
+		}
+		p := strings.TrimSpace(desc.GetReadmeFilePath())
+		if p == "" {
+			continue
+		}
+		sName := deriveSkillNameFromPath(p)
+		sNameLower := strings.ToLower(sName)
+		for _, cmd := range candidateCommands {
+			if cmd == sNameLower || cmd == strings.TrimPrefix(sNameLower, "ak-") || "ak-"+cmd == sNameLower {
+				return sName, p
+			}
+		}
+	}
+	return "", ""
 }
 
 // buildRequestContextRulesSection 构造 <rules> 片段。
@@ -1269,3 +1341,131 @@ func todoStatusLabel(status agentv1.TodoStatus) string {
 		return "unspecified"
 	}
 }
+
+// pruneHistoricalShellOutputs 扫描 prompt 消息流：
+// 1. Đối với các tin nhắn cách hiện tại >= turnThreshold (6) turns, các output của Shell có kích thước > 2.000 ký tự
+//    được thay thế bằng chuỗi tóm tắt nhỏ [Previous shell output of "<command>" truncated to save context].
+// 2. Đối với các output Shell gần đây, áp dụng bộ lọc cắt tỉa Output Shell nếu vượt quá 10.000 ký tự hoặc 250 dòng.
+func pruneHistoricalShellOutputs(messages []Message, turnThreshold int) []Message {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	userIndices := make([]int, 0, len(messages))
+	for i, msg := range messages {
+		if msg.Role == "user" {
+			userIndices = append(userIndices, i)
+		}
+	}
+
+	cutoffIndex := -1
+	if turnThreshold > 0 && len(userIndices) > turnThreshold {
+		cutoffIndex = userIndices[len(userIndices)-turnThreshold]
+	}
+
+	toolCallCommands := make(map[string]string)
+	for _, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				if tc.Function.Name == "Shell" || strings.EqualFold(tc.Function.Name, "shell") {
+					var args struct {
+						Command string `json:"command"`
+					}
+					if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err == nil && args.Command != "" {
+						toolCallCommands[tc.ID] = args.Command
+					}
+				}
+			}
+		}
+	}
+
+	for i := range messages {
+		msg := &messages[i]
+		isOld := cutoffIndex >= 0 && i < cutoffIndex
+
+		if msg.Role == "tool" && (msg.Name == "Shell" || strings.EqualFold(msg.Name, "shell")) {
+			if isOld && len(msg.Content) > 2000 {
+				cmd := toolCallCommands[msg.ToolCallID]
+				if len(cmd) > 60 {
+					cmd = cmd[:60] + "..."
+				}
+				if cmd != "" {
+					msg.Content = fmt.Sprintf("[Previous shell output of %q truncated to save context]", cmd)
+				} else {
+					msg.Content = "[Previous shell output truncated to save context]"
+				}
+			} else {
+				msg.Content = truncateShellOutputLinesAndCharsText(msg.Content)
+			}
+			continue
+		}
+
+		if msg.Role == "assistant" && strings.Contains(msg.Content, `<tool_result`) && strings.Contains(msg.Content, `tool="Shell"`) {
+			if isOld && len(msg.Content) > 2000 {
+				msg.Content = "<tool_result tool=\"Shell\">\n[Previous shell output truncated to save context]\n</tool_result>"
+			} else {
+				msg.Content = truncateShellOutputLinesAndCharsText(msg.Content)
+			}
+			continue
+		}
+
+		if msg.Role == "tool" && (msg.Name == "Ls" || strings.EqualFold(msg.Name, "ls") || msg.Name == "DirectoryList") {
+			if isOld && len(msg.Content) > 2000 {
+				msg.Content = "[Previous directory listing truncated to save context]"
+			} else if len(msg.Content) > 10000 {
+				msg.Content = truncateShellOutputLinesAndCharsText(msg.Content)
+			}
+			continue
+		}
+
+		if msg.Role == "assistant" && strings.Contains(msg.Content, `<tool_result`) && (strings.Contains(msg.Content, `tool="Ls"`) || strings.Contains(msg.Content, `tool="DirectoryList"`)) {
+			if isOld && len(msg.Content) > 2000 {
+				msg.Content = "<tool_result tool=\"Ls\">\n[Previous directory listing truncated to save context]\n</tool_result>"
+			} else if len(msg.Content) > 10000 {
+				msg.Content = truncateShellOutputLinesAndCharsText(msg.Content)
+			}
+			continue
+		}
+	}
+
+	return messages
+}
+
+// truncateShellOutputLinesAndCharsText 对 Shell 输出执行双重截断保护：
+// 1. Dòng limit: Tối đa 250 dòng (lấy 100 dòng đầu + 50 dòng cuối kèm thông báo)
+// 2. Ký tự limit: Tối đa 10.000 ký tự (tránh các dòng cực dài làm phình context)
+func truncateShellOutputLinesAndCharsText(text string) string {
+	if text == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	totalLines := len(lines)
+	totalChars := len(text)
+	if totalChars <= 10000 && totalLines <= 250 {
+		return text
+	}
+	if totalLines > 250 {
+		head := lines[:100]
+		tail := lines[totalLines-50:]
+		omitted := totalLines - 150
+		notice := fmt.Sprintf("\n\n[... Output truncated: Total %d lines (%d bytes). Omitted %d lines in middle. Use head/grep/tail to view specific parts ...]\n\n", totalLines, totalChars, omitted)
+		truncated := strings.Join(head, "\n") + notice + strings.Join(tail, "\n")
+		if len(truncated) <= 10000 {
+			return truncated
+		}
+		text = truncated
+		totalChars = len(text)
+	}
+	if totalChars > 10000 {
+		headChars := 6000
+		tailChars := 3000
+		if len(text) > headChars+tailChars {
+			notice := fmt.Sprintf("\n\n[... Output truncated: Total %d lines (%d bytes). Use head/grep/tail to view specific parts ...]\n\n", totalLines, totalChars)
+			head := text[:headChars]
+			tail := text[len(text)-tailChars:]
+			return head + notice + tail
+		}
+	}
+	return text
+}
+
