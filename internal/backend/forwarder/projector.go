@@ -80,6 +80,7 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 	seenToolCalls := make(map[string]struct{})
 	openToolCalls := make(map[string]struct{})
 	toolCallMessageIndexes := make(map[string]int)
+	var lastEmittedStaticRequestContext string
 	for _, entry := range entries {
 		switch strings.TrimSpace(entry.Kind) {
 		case "model_message":
@@ -113,7 +114,7 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 			if err := protojson.Unmarshal(entry.Payload, requestContext); err != nil {
 				return nil, fmt.Errorf("decode request_context entry: %w", err)
 			}
-			for _, replay := range promptengine.BuildRequestContextReplayMessages(requestContext) {
+			for _, replay := range promptengine.BuildRequestContextReplayMessagesDeduplicated(requestContext, &lastEmittedStaticRequestContext) {
 				messages = append(messages, toModelMessage(replay))
 			}
 		case "prompt_context":
@@ -248,6 +249,23 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 							Name:       toolName,
 							ToolCallID: toolCallID,
 							Content:    "[Previous directory listing truncated to save context]",
+						})
+						continue
+					}
+				}
+				if (toolName == "Grep" || strings.EqualFold(toolName, "grep")) && isHistoricalReplayToolResultDistance(conversation, entry, 2) {
+					contentToTest := payload.ResultText
+					if toolCall != nil {
+						if replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall); ok {
+							contentToTest = replayMessage.Content
+						}
+					}
+					if len(contentToTest) > 2000 {
+						messages = append(messages, modeladapter.Message{
+							Role:       "tool",
+							Name:       toolName,
+							ToolCallID: toolCallID,
+							Content:    "[Previous grep output truncated to save context]",
 						})
 						continue
 					}

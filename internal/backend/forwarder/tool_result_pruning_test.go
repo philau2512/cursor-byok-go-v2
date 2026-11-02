@@ -132,3 +132,83 @@ func TestLimitProjectedToolResultReplayTruncatesAndPrunesLsOutput(t *testing.T) 
 		t.Fatalf("expected historical Ls output pruned to %q, got %q", expectedPlaceholder, prunedHistorical)
 	}
 }
+
+func TestLimitProjectedToolResultReplayPreservesGrepAtNextTurnAndPrunesAtDistance2(t *testing.T) {
+	grepMatches := strings.Repeat("{\"line\": 10, \"match\": \"some code matching pattern here\"},\n", 300) // ~17KB
+	// Active turn (historical = false): should preserve full matches up to 32KB so AI never misses code search results
+	active := limitProjectedToolResultReplay("Grep", grepMatches, "", false, false)
+	if len(active) < 15000 {
+		t.Fatalf("expected active Grep to retain full matches, got len=%d", len(active))
+	}
+
+	rawToolCall, _ := json.Marshal(map[string]any{
+		"tool_call_id": "call-grep-1",
+		"tool_name":    "Grep",
+		"tool_call": map[string]any{
+			"grepToolCall": map[string]any{
+				"args": map[string]any{
+					"pattern": "test",
+				},
+			},
+		},
+	})
+	rawToolResult, _ := json.Marshal(map[string]any{
+		"tool_name":    "Grep",
+		"tool_call_id": "call-grep-1",
+		"result_text":  grepMatches,
+		"arguments":    `{"pattern":"test"}`,
+	})
+	entryCall := HistoryEntry{Seq: 1, TurnSeq: 1, Role: "assistant", Kind: "tool_call", Payload: rawToolCall}
+	entryResult := HistoryEntry{Seq: 2, TurnSeq: 1, Role: "tool", Kind: "tool_result", Payload: rawToolResult}
+
+	// Scenario A: Currently at Turn 2 (NextTurnSeq = 3, currentTurnSeq = 2).
+	// Turn 1's Grep has distance = 2 - 1 = 1 (< 2). It should be PRESERVED so Turn 2 can use Turn 1's search!
+	convTurn2 := &ConversationFile{
+		NextTurnSeq: 3,
+		Entries: []HistoryEntry{
+			entryCall,
+			entryResult,
+		},
+	}
+	projector := NewHistoryProjector()
+	msgsTurn2, err := projector.ProjectPromptReplay(convTurn2)
+	if err != nil {
+		t.Fatalf("ProjectPromptReplay failed: %v", err)
+	}
+	if len(msgsTurn2) < 2 || strings.Contains(msgsTurn2[1].Content, "Previous grep output") {
+		t.Fatalf("Turn 1 Grep should be preserved at Turn 2, got: %+v", msgsTurn2)
+	}
+
+	// Scenario B: Currently at Turn 3 (NextTurnSeq = 4, currentTurnSeq = 3).
+	// Turn 1's Grep has distance = 3 - 1 = 2 (>= 2). It should now be PRUNED to save context!
+	convTurn3 := &ConversationFile{
+		NextTurnSeq: 4,
+		Entries: []HistoryEntry{
+			entryCall,
+			entryResult,
+		},
+	}
+	msgsTurn3, err := projector.ProjectPromptReplay(convTurn3)
+	if err != nil {
+		t.Fatalf("ProjectPromptReplay failed: %v", err)
+	}
+	if len(msgsTurn3) < 2 || !strings.Contains(msgsTurn3[1].Content, "Previous grep output truncated to save context") {
+		t.Fatalf("Turn 1 Grep should be pruned at Turn 3, got: %+v", msgsTurn3)
+	}
+}
+
+func TestLimitProjectedToolResultReplayPrunesHistoricalSkillRead(t *testing.T) {
+	skillContent := "---\nname: ak-debug\ndescription: Debug misbehaving code\n---\n" + strings.Repeat("# Step details and rules\n", 200) // ~5KB
+	// Active (current turn): should retain full content
+	active := limitProjectedToolResultReplay("Read", skillContent, "", false, false)
+	if !strings.Contains(active, "ak-debug") {
+		t.Fatalf("active skill read should retain content")
+	}
+
+	// Historical (prior turn): should be pruned to lightweight notice
+	prunedHistorical := limitProjectedToolResultReplay("Read", skillContent, "", false, true)
+	expectedPlaceholder := "[Previous skill instructions omitted to save context]"
+	if prunedHistorical != expectedPlaceholder {
+		t.Fatalf("expected historical skill read pruned to %q, got %q", expectedPlaceholder, prunedHistorical)
+	}
+}

@@ -316,6 +316,21 @@ func buildMessagesFromStructuredState(state *agentv1.ConversationStateStructure)
 
 // buildMessagesFromRequestContext 把 request_context 中的用户环境信息编译成上游可消费消息。
 func buildMessagesFromRequestContext(requestContext *agentv1.RequestContext) []Message {
+	return buildMessagesFromRequestContextDeduplicated(requestContext, nil)
+}
+
+// BuildRequestContextReplayMessages 导出 request_context 的精简回放形状，供其他链路复用。
+func BuildRequestContextReplayMessages(requestContext *agentv1.RequestContext) []Message {
+	return buildMessagesFromRequestContext(requestContext)
+}
+
+// BuildRequestContextReplayMessagesDeduplicated 导出 request_context 的回放形状，
+// 并自动跳过在同一个会话中前面 turn 已完整回放过的重复静态 rules/user_info/skills 内容。
+func BuildRequestContextReplayMessagesDeduplicated(requestContext *agentv1.RequestContext, lastEmittedStatic *string) []Message {
+	return buildMessagesFromRequestContextDeduplicated(requestContext, lastEmittedStatic)
+}
+
+func buildMessagesFromRequestContextDeduplicated(requestContext *agentv1.RequestContext, lastEmittedStatic *string) []Message {
 	if requestContext == nil {
 		return nil
 	}
@@ -325,7 +340,20 @@ func buildMessagesFromRequestContext(requestContext *agentv1.RequestContext) []M
 	mergeLocalAgentRules(requestContext)
 	hydrateLocalMCPDescriptors(requestContext)
 
-	sections := append(buildRequestContextStaticSections(requestContext), buildRequestContextRealtimeSections(requestContext)...)
+	staticSections := buildRequestContextStaticSections(requestContext)
+	staticContent := strings.TrimSpace(strings.Join(staticSections, "\n\n"))
+	realtimeSections := buildRequestContextRealtimeSections(requestContext)
+
+	sections := make([]string, 0, len(staticSections)+len(realtimeSections))
+	if staticContent != "" {
+		if lastEmittedStatic == nil || *lastEmittedStatic != staticContent {
+			sections = append(sections, staticSections...)
+			if lastEmittedStatic != nil {
+				*lastEmittedStatic = staticContent
+			}
+		}
+	}
+	sections = append(sections, realtimeSections...)
 	if len(sections) == 0 {
 		return nil
 	}
@@ -333,11 +361,6 @@ func buildMessagesFromRequestContext(requestContext *agentv1.RequestContext) []M
 		Role:    "user",
 		Content: strings.Join(sections, "\n\n"),
 	}}
-}
-
-// BuildRequestContextReplayMessages 导出 request_context 的精简回放形状，供其他链路复用。
-func BuildRequestContextReplayMessages(requestContext *agentv1.RequestContext) []Message {
-	return buildMessagesFromRequestContext(requestContext)
 }
 
 func buildRequestContextStaticSections(requestContext *agentv1.RequestContext) []string {
