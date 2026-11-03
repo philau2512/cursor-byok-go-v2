@@ -79,16 +79,15 @@ func (service *Service) appendConversationEntries(stream *ActiveStream, conversa
 		stream.mu.Unlock()
 		return nil, fmt.Errorf("checkpoint conversation is not initialized")
 	}
-	working := cloneConversationFile(stream.CheckpointConversation)
 	if service.store != nil {
 		persisted, assigned, err := service.store.AppendEntries(conversationID, resetEntrySequences(entries))
 		if err != nil {
 			stream.mu.Unlock()
 			return nil, err
 		}
-		if persisted != nil {
-			working = persisted
-		} else {
+		working := persisted
+		if working == nil {
+			working = cloneConversationFile(stream.CheckpointConversation)
 			appendEntriesInPlace(working, assigned)
 		}
 		stream.CheckpointConversation = working
@@ -96,6 +95,7 @@ func (service *Service) appendConversationEntries(stream *ActiveStream, conversa
 		stream.mu.Unlock()
 		return assigned, nil
 	}
+	working := cloneConversationFile(stream.CheckpointConversation)
 	assigned := appendEntriesInPlace(working, entries)
 	stream.CheckpointConversation = working
 	stream.UpdatedAt = time.Now().UTC()

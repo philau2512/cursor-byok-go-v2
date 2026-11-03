@@ -32,6 +32,7 @@ const (
 	conversationLockAcquireTimeout     = 30 * time.Second
 	staleConversationLockRemoveTimeout = 30 * time.Second
 	conversationLockRetryInterval      = 10 * time.Millisecond
+	transcriptSyncThrottle             = 5 * time.Second
 )
 
 var (
@@ -57,6 +58,7 @@ type ConversationFileStore struct {
 	entriesCache       map[string]cachedConversationEntries
 	transcriptMu       sync.Mutex
 	transcriptVersions map[string]int64
+	lastTranscriptSync map[string]time.Time
 	transcriptSyncWg   sync.WaitGroup
 }
 
@@ -74,6 +76,7 @@ func NewConversationFileStore(historyRoot string) *ConversationFileStore {
 		root:               strings.TrimSpace(historyRoot),
 		entriesCache:       make(map[string]cachedConversationEntries),
 		transcriptVersions: make(map[string]int64),
+		lastTranscriptSync: make(map[string]time.Time),
 	}
 }
 
@@ -772,6 +775,29 @@ func conversationHasCompletedTurnBefore(entries []HistoryEntry, currentTurnSeq i
 	return false
 }
 
+func conversationIsAtTerminalTurn(conversation *ConversationFile) bool {
+	if conversation == nil {
+		return true
+	}
+	switch strings.TrimSpace(conversation.CurrentLoopStatus) {
+	case "idle", "completed", "failed", "canceled":
+		return true
+	}
+	if len(conversation.Entries) > 0 {
+		last := conversation.Entries[len(conversation.Entries)-1]
+		if strings.TrimSpace(last.Kind) == "metadata" {
+			var payload metadataPayload
+			if err := json.Unmarshal(last.Payload, &payload); err == nil {
+				switch strings.TrimSpace(payload.Type) {
+				case "turn_completed", "provider_error", "failed", "control":
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (store *ConversationFileStore) syncCursorTranscriptBestEffort(conversationID string, conversation *ConversationFile) {
 	if store == nil || conversation == nil || !conversationTranscriptSyncReady(conversation) {
 		return
@@ -780,6 +806,23 @@ func (store *ConversationFileStore) syncCursorTranscriptBestEffort(conversationI
 	if folder == "" {
 		return
 	}
+
+	now := time.Now()
+	isTerminal := conversationIsAtTerminalTurn(conversation)
+
+	store.transcriptMu.Lock()
+	if store.lastTranscriptSync == nil {
+		store.lastTranscriptSync = make(map[string]time.Time)
+	}
+	if !isTerminal {
+		if lastSync, ok := store.lastTranscriptSync[conversationID]; ok && now.Sub(lastSync) < transcriptSyncThrottle {
+			store.transcriptMu.Unlock()
+			return
+		}
+	}
+	store.lastTranscriptSync[conversationID] = now
+	store.transcriptMu.Unlock()
+
 	snapshot := cloneConversationFile(conversation)
 	targetVersion := snapshot.ContextVersion
 
@@ -1192,7 +1235,11 @@ func cloneConversationFile(conversation *ConversationFile) *ConversationFile {
 	cloned.ImportedTurnIDs = cloneByteSlices(conversation.ImportedTurnIDs)
 	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
 	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
-	cloned.Entries = append([]HistoryEntry(nil), conversation.Entries...)
+	if len(conversation.Entries) > 0 {
+		cloned.Entries = conversation.Entries[:len(conversation.Entries):len(conversation.Entries)]
+	} else {
+		cloned.Entries = nil
+	}
 	return &cloned
 }
 

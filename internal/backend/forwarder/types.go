@@ -205,6 +205,12 @@ type ActiveStream struct {
 	TerminalCleanupTimer        *time.Timer
 	TerminalCleanupSeq          atomic.Uint64
 
+	CachedCompiled               CompiledConversation
+	CachedCompiledContextVersion int64
+	CachedCompiledMode           agentv1.AgentMode
+	CachedProjection             *CheckpointProjection
+	CachedProjectionContextVersion int64
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

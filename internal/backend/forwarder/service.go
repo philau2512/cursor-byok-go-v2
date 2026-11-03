@@ -1682,16 +1682,37 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		return service.failStream(stream, "unknown", err)
 	}
 	compileStartedAt := time.Now().UTC()
-	compiled, err := service.compiler.Compile(conversation, mode, latestUserText, modelName)
+	var compiled CompiledConversation
+	if stream != nil {
+		stream.mu.Lock()
+		if stream.CachedCompiledContextVersion == conversation.ContextVersion &&
+			stream.CachedCompiledContextVersion > 0 &&
+			stream.CachedCompiledMode == mode &&
+			len(stream.CachedCompiled.Messages) > 0 {
+			compiled = stream.CachedCompiled
+		}
+		stream.mu.Unlock()
+	}
+	if len(compiled.Messages) == 0 {
+		var compileErr error
+		compiled, compileErr = service.compiler.Compile(conversation, mode, latestUserText, modelName)
+		if compileErr != nil {
+			service.setTurnPhase(stream, TurnPhaseFailed)
+			return service.failStream(stream, "unknown", compileErr)
+		}
+		compiled = guardCompiledConversationForProvider(compiled)
+		if stream != nil {
+			stream.mu.Lock()
+			stream.CachedCompiled = compiled
+			stream.CachedCompiledContextVersion = conversation.ContextVersion
+			stream.CachedCompiledMode = mode
+			stream.mu.Unlock()
+		}
+	}
 	compileDurationMS := time.Since(compileStartedAt).Milliseconds()
 	if compileDurationMS < 0 {
 		compileDurationMS = 0
 	}
-	if err != nil {
-		service.setTurnPhase(stream, TurnPhaseFailed)
-		return service.failStream(stream, "unknown", err)
-	}
-	compiled = guardCompiledConversationForProvider(compiled)
 	if compacted, compactErr := service.maybeCompactBeforeProvider(stream, conversation, compiled); compactErr != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", compactErr)
@@ -2576,16 +2597,52 @@ func (service *Service) publishCheckpointWithTerminalAction(requestID string, te
 	if err != nil {
 		return err
 	}
-	projection, err := service.projector.ProjectCheckpointProjection(conversation)
-	if err != nil {
-		return err
+	var projection *CheckpointProjection
+	if stream != nil {
+		stream.mu.Lock()
+		if stream.CachedProjectionContextVersion == conversation.ContextVersion &&
+			stream.CachedProjectionContextVersion > 0 &&
+			stream.CachedProjection != nil {
+			projection = cloneCheckpointProjection(stream.CachedProjection)
+		}
+		stream.mu.Unlock()
 	}
-	if projection == nil || projection.State == nil {
-		return fmt.Errorf("checkpoint projection is empty")
+	if projection == nil {
+		var projectErr error
+		projection, projectErr = service.projector.ProjectCheckpointProjection(conversation)
+		if projectErr != nil {
+			return projectErr
+		}
+		if projection == nil || projection.State == nil {
+			return fmt.Errorf("checkpoint projection is empty")
+		}
+		if stream != nil {
+			stream.mu.Lock()
+			stream.CachedProjection = cloneCheckpointProjection(projection)
+			stream.CachedProjectionContextVersion = conversation.ContextVersion
+			stream.mu.Unlock()
+		}
 	}
 	projection.State.PendingToolCalls = buildPendingToolCalls(pendingExecs, pendingInteractions)
 	service.rewriteCheckpointTokenDetailsForClient(stream, conversation, projection.State)
 	return service.queueCheckpointProjectionWithTerminal(stream, projection, terminal)
+}
+
+func cloneCheckpointProjection(projection *CheckpointProjection) *CheckpointProjection {
+	if projection == nil {
+		return nil
+	}
+	cloned := &CheckpointProjection{
+		Blobs: projection.Blobs,
+	}
+	if projection.State != nil {
+		if stateCopy, ok := proto.Clone(projection.State).(*agentv1.ConversationStateStructure); ok {
+			cloned.State = stateCopy
+		} else {
+			cloned.State = projection.State
+		}
+	}
+	return cloned
 }
 
 func (service *Service) rewriteCheckpointTokenDetailsForClient(stream *ActiveStream, conversation *ConversationFile, state *agentv1.ConversationStateStructure) {
@@ -2606,12 +2663,32 @@ func (service *Service) checkpointCompiledConversation(stream *ActiveStream, con
 		return CompiledConversation{}, false
 	}
 	_, modelName, latestUserText, mode := checkpointPromptContext(stream)
+	if stream != nil {
+		stream.mu.Lock()
+		if stream.CachedCompiledContextVersion == conversation.ContextVersion &&
+			stream.CachedCompiledContextVersion > 0 &&
+			stream.CachedCompiledMode == mode &&
+			len(stream.CachedCompiled.Messages) > 0 {
+			cached := stream.CachedCompiled
+			stream.mu.Unlock()
+			return cached, true
+		}
+		stream.mu.Unlock()
+	}
 	compiled, err := service.compiler.Compile(conversation, mode, latestUserText, modelName)
 	if err != nil {
 		log.Printf("forwarder checkpoint token estimate failed request_id=%s conversation_id=%s err=%v", strings.TrimSpace(activeStreamRequestID(stream)), strings.TrimSpace(conversation.ConversationID), err)
 		return CompiledConversation{}, false
 	}
-	return guardCompiledConversationForProvider(compiled), true
+	guarded := guardCompiledConversationForProvider(compiled)
+	if stream != nil {
+		stream.mu.Lock()
+		stream.CachedCompiled = guarded
+		stream.CachedCompiledContextVersion = conversation.ContextVersion
+		stream.CachedCompiledMode = mode
+		stream.mu.Unlock()
+	}
+	return guarded, true
 }
 
 func (service *Service) checkpointDisplayMaxTokens(stream *ActiveStream, conversation *ConversationFile) int64 {
