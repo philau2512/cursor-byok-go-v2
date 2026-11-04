@@ -19,6 +19,7 @@ type Module struct {
 	AiHandler                         http.Handler
 	RepositoryServiceHandler          http.Handler
 	UploadServiceHandler              http.Handler
+	PromptOptimizeHandler             http.Handler
 }
 
 // NewModule 创建 forwarder 模块，并导出本地 Bidi / RunSSE 处理器。
@@ -35,5 +36,6 @@ func NewModule(historyRoot string, channelService modeladapter.ChannelResolver) 
 		AiHandler:                         newAIHandler(service),
 		RepositoryServiceHandler:          newRepositoryServiceHandler(service),
 		UploadServiceHandler:              newUploadServiceHandler(service),
+		PromptOptimizeHandler:             service.PromptOptimizeHTTPHandler(),
 	}
 }
