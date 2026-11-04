@@ -21,6 +21,8 @@ type ConversationFile struct {
 	RootConversationID              string                                `json:"root_conversation_id"`
 	ParentConversationID            string                                `json:"parent_conversation_id"`
 	ParentToolCallID                string                                `json:"parent_tool_call_id"`
+	Title                           string                                `json:"title,omitempty"`
+	Name                            string                                `json:"name,omitempty"`
 	SubagentTypeName                string                                `json:"subagent_type_name,omitempty"`
 	AgentTranscriptsFolder          string                                `json:"agent_transcripts_folder,omitempty"`
 	Mode                            string                                `json:"mode"`

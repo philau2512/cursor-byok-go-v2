@@ -22,18 +22,24 @@ import (
 )
 
 const (
-	conversationStateFileName          = "state.json"
-	conversationContextFileName        = "context.json"
-	conversationContextJSONLFileName   = "context.jsonl"
-	maxCachedConversations             = 8
-	conversationSchemaVersion          = 1
-	conversationLockStaleAfter         = 30 * time.Minute
-	legacyConversationLockStaleAfter   = 30 * time.Second
-	conversationLockAcquireTimeout     = 30 * time.Second
-	staleConversationLockRemoveTimeout = 30 * time.Second
-	conversationLockRetryInterval      = 10 * time.Millisecond
-	transcriptSyncThrottle             = 5 * time.Second
+	conversationStateFileName                 = "state.json"
+	conversationContextFileName               = "context.json"
+	conversationContextJSONLFileName          = "context.jsonl"
+	conversationCustomTitleHyphenFileName     = "custom-title.json"
+	conversationCustomTitleUnderscoreFileName = "custom_title.json"
+	maxCachedConversations                    = 8
+	conversationSchemaVersion                 = 1
+	conversationLockStaleAfter                = 30 * time.Minute
+	legacyConversationLockStaleAfter          = 30 * time.Second
+	conversationLockAcquireTimeout            = 30 * time.Second
+	staleConversationLockRemoveTimeout        = 30 * time.Second
+	conversationLockRetryInterval             = 10 * time.Millisecond
+	transcriptSyncThrottle                    = 5 * time.Second
 )
+
+type customTitleFile struct {
+	CustomTitle string `json:"customTitle"`
+}
 
 var (
 	conversationLockProcessStartedAt = time.Now()
@@ -433,6 +439,87 @@ func (store *ConversationFileStore) ListConversationIDs() ([]string, error) {
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// UpdateConversationTitle 更新会话标题，保存到 state.json 并生成 custom-title.json / custom_title.json。
+func (store *ConversationFileStore) UpdateConversationTitle(conversationID string, title string, onlyIfEmpty bool) error {
+	if store == nil {
+		return fmt.Errorf("conversation file store is nil")
+	}
+	normalizedConversationID, err := validateConversationID(conversationID)
+	if err != nil {
+		return err
+	}
+	cleanTitle := strings.TrimSpace(title)
+	if cleanTitle == "" {
+		return nil
+	}
+
+	updated, err := store.UpdateConversationMeta(normalizedConversationID, func(conversation *ConversationFile) error {
+		if onlyIfEmpty && strings.TrimSpace(conversation.Title) != "" {
+			return nil
+		}
+		conversation.Title = cleanTitle
+		conversation.Name = cleanTitle
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("update conversation meta: %w", err)
+	}
+	if updated == nil || (onlyIfEmpty && strings.TrimSpace(updated.Title) != cleanTitle) {
+		return nil
+	}
+
+	dir := store.conversationDir(normalizedConversationID)
+	payload := customTitleFile{CustomTitle: cleanTitle}
+
+	hyphenPath := filepath.Join(dir, conversationCustomTitleHyphenFileName)
+	if err := writeJSONFileAtomic(hyphenPath, payload); err != nil {
+		return fmt.Errorf("write %s: %w", conversationCustomTitleHyphenFileName, err)
+	}
+
+	underscorePath := filepath.Join(dir, conversationCustomTitleUnderscoreFileName)
+	if err := writeJSONFileAtomic(underscorePath, payload); err != nil {
+		return fmt.Errorf("write %s: %w", conversationCustomTitleUnderscoreFileName, err)
+	}
+
+	return nil
+}
+
+// DeleteConversation 删除指定会话的全部本地持久化数据。
+func (store *ConversationFileStore) DeleteConversation(conversationID string) error {
+	if store == nil {
+		return fmt.Errorf("conversation file store is nil")
+	}
+	normalizedConversationID, err := validateConversationID(conversationID)
+	if err != nil {
+		return err
+	}
+	dir := store.conversationDir(normalizedConversationID)
+	release, err := acquireConversationLock(store.lockPath(normalizedConversationID))
+	if err == nil {
+		defer release()
+	}
+
+	store.cacheMu.Lock()
+	if store.entriesCache != nil {
+		delete(store.entriesCache, normalizedConversationID)
+	}
+	store.cacheMu.Unlock()
+
+	store.transcriptMu.Lock()
+	if store.transcriptVersions != nil {
+		delete(store.transcriptVersions, normalizedConversationID)
+	}
+	if store.lastTranscriptSync != nil {
+		delete(store.lastTranscriptSync, normalizedConversationID)
+	}
+	store.transcriptMu.Unlock()
+
+	if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("delete conversation directory %s: %w", dir, err)
+	}
+	return nil
 }
 
 func (store *ConversationFileStore) mutateConversation(conversationID string, createIfMissing bool, update func(*ConversationFile) error) (*ConversationFile, error) {
@@ -1068,6 +1155,12 @@ func mergeConversationMetadata(target *ConversationFile, source *ConversationFil
 	}
 	target.ParentConversationID = strings.TrimSpace(source.ParentConversationID)
 	target.ParentToolCallID = strings.TrimSpace(source.ParentToolCallID)
+	if strings.TrimSpace(source.Title) != "" {
+		target.Title = strings.TrimSpace(source.Title)
+	}
+	if strings.TrimSpace(source.Name) != "" {
+		target.Name = strings.TrimSpace(source.Name)
+	}
 	target.SubagentTypeName = strings.TrimSpace(source.SubagentTypeName)
 	if folder := normalizeAgentTranscriptsFolder(source.AgentTranscriptsFolder); folder != "" {
 		target.AgentTranscriptsFolder = folder

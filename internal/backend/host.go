@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"cursor/gen/agentv1/agentv1connect"
 	"cursor/internal/ads"
 	"cursor/internal/appdata"
 	"cursor/internal/backend/forwarder"
@@ -313,6 +314,16 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 			server.Name("run_sse"),
 			server.ConnectStream(),
 			server.Local(server.HTTPHandlerAction(agentModule.LocalRunSSE)),
+		),
+		server.POST(agentv1connect.AgentServiceUpdateConversationMetadataProcedure,
+			server.Name("agent_update_conversation_metadata"),
+			server.ConnectUnary(),
+			server.Local(server.HTTPHandlerAction(agentModule.UpdateConversationMetadataHandler)),
+		),
+		server.POST(agentv1connect.AgentServiceNameAgentProcedure,
+			server.Name("agent_name_agent"),
+			server.ConnectUnary(),
+			server.Local(server.HTTPHandlerAction(agentModule.NameAgentHandler)),
 		),
 		server.POST("/aiserver.v1.AiService/ServerTime",
 			server.Name("server_time"),
