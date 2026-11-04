@@ -713,3 +713,62 @@ func TestPruneHistoricalShellOutputs(t *testing.T) {
 	}
 }
 
+func TestBuildRequestContextReplayMessagesDeduplicated(t *testing.T) {
+	rc1 := &agentv1.RequestContext{
+		Env: &agentv1.RequestContextEnv{
+			OsVersion: "win32 10.0.22621",
+			Shell:     "bash",
+		},
+		Rules: []*agentv1.CursorRule{
+			{FullPath: "rule1.mdc", Content: "Always be concise."},
+		},
+	}
+
+	var lastEmittedStatic string
+
+	// Turn 1: should emit static rules and user info
+	msgs1 := BuildRequestContextReplayMessagesDeduplicated(rc1, &lastEmittedStatic)
+	if len(msgs1) != 1 {
+		t.Fatalf("expected 1 message in turn 1, got %d", len(msgs1))
+	}
+	if !strings.Contains(msgs1[0].Content, "Always be concise.") {
+		t.Fatalf("turn 1 missing rule content: %s", msgs1[0].Content)
+	}
+	if !strings.Contains(msgs1[0].Content, "win32 10.0.22621") {
+		t.Fatalf("turn 1 missing os version: %s", msgs1[0].Content)
+	}
+
+	// Turn 2 with same rules: should be deduplicated (no duplicate static rules message)
+	rc2 := &agentv1.RequestContext{
+		Env: &agentv1.RequestContextEnv{
+			OsVersion: "win32 10.0.22621",
+			Shell:     "bash",
+		},
+		Rules: []*agentv1.CursorRule{
+			{FullPath: "rule1.mdc", Content: "Always be concise."},
+		},
+	}
+	msgs2 := BuildRequestContextReplayMessagesDeduplicated(rc2, &lastEmittedStatic)
+	if len(msgs2) != 0 {
+		t.Fatalf("expected 0 messages in turn 2 due to deduplication, got %d: %s", len(msgs2), msgs2[0].Content)
+	}
+
+	// Turn 3 with modified rule: should emit updated static content
+	rc3 := &agentv1.RequestContext{
+		Env: &agentv1.RequestContextEnv{
+			OsVersion: "win32 10.0.22621",
+			Shell:     "bash",
+		},
+		Rules: []*agentv1.CursorRule{
+			{FullPath: "rule1.mdc", Content: "Always be concise and accurate."},
+		},
+	}
+	msgs3 := BuildRequestContextReplayMessagesDeduplicated(rc3, &lastEmittedStatic)
+	if len(msgs3) != 1 {
+		t.Fatalf("expected 1 message in turn 3 after rule update, got %d", len(msgs3))
+	}
+	if !strings.Contains(msgs3[0].Content, "Always be concise and accurate.") {
+		t.Fatalf("turn 3 missing updated rule content: %s", msgs3[0].Content)
+	}
+}
+

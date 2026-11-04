@@ -447,6 +447,59 @@ func (service *Service) BidiAppend(ctx context.Context, req *connect.Request[ais
 	return connect.NewResponse(&aiserverv1.BidiAppendResponse{}), nil
 }
 
+// UpdateConversationMetadata 处理客户端同步会话元数据（如重命名会话）。
+func (service *Service) UpdateConversationMetadata(ctx context.Context, req *connect.Request[agentv1.UpdateConversationMetadataRequest]) (*connect.Response[agentv1.UpdateConversationMetadataResponse], error) {
+	if service == nil || service.store == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("forwarder service is uninitialized"))
+	}
+	if req == nil || req.Msg == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("request message is required"))
+	}
+	conversationID := strings.TrimSpace(req.Msg.GetConversationId())
+	if conversationID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("conversation_id is required"))
+	}
+	name := strings.TrimSpace(req.Msg.GetName())
+	if name != "" {
+		onlyIfEmpty := req.Msg.GetOnlySetNameIfEmpty()
+		if err := service.store.UpdateConversationTitle(conversationID, name, onlyIfEmpty); err != nil {
+			log.Printf("forwarder update conversation title failed conversation_id=%s err=%v", conversationID, err)
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update conversation title: %w", err))
+		}
+	}
+	return connect.NewResponse(&agentv1.UpdateConversationMetadataResponse{}), nil
+}
+
+// NameAgent 生成或返回智能体/会话名称。
+func (service *Service) NameAgent(ctx context.Context, req *connect.Request[agentv1.NameAgentRequest]) (*connect.Response[agentv1.NameAgentResponse], error) {
+	if service == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("forwarder service is uninitialized"))
+	}
+	name := "Agent"
+	if req != nil && req.Msg != nil {
+		msg := strings.TrimSpace(req.Msg.GetUserMessage())
+		if msg != "" {
+			firstLine := strings.Split(msg, "\n")[0]
+			firstLine = strings.TrimSpace(firstLine)
+			runes := []rune(firstLine)
+			if len(runes) > 40 {
+				name = string(runes[:40])
+			} else if len(runes) > 0 {
+				name = firstLine
+			}
+		}
+	}
+	return connect.NewResponse(&agentv1.NameAgentResponse{Name: name}), nil
+}
+
+// DeleteConversation 删除指定会话的数据。
+func (service *Service) DeleteConversation(conversationID string) error {
+	if service == nil || service.store == nil {
+		return fmt.Errorf("forwarder service is uninitialized")
+	}
+	return service.store.DeleteConversation(conversationID)
+}
+
 func queuedUserMessageDebugFields(clientKind string, intent InboundIntent) (map[string]any, bool) {
 	if strings.TrimSpace(clientKind) != "conversation_action" || !intent.StartsRun || intent.ClientMessage == nil {
 		return nil, false
@@ -1682,16 +1735,37 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		return service.failStream(stream, "unknown", err)
 	}
 	compileStartedAt := time.Now().UTC()
-	compiled, err := service.compiler.Compile(conversation, mode, latestUserText, modelName)
+	var compiled CompiledConversation
+	if stream != nil {
+		stream.mu.Lock()
+		if stream.CachedCompiledContextVersion == conversation.ContextVersion &&
+			stream.CachedCompiledContextVersion > 0 &&
+			stream.CachedCompiledMode == mode &&
+			len(stream.CachedCompiled.Messages) > 0 {
+			compiled = stream.CachedCompiled
+		}
+		stream.mu.Unlock()
+	}
+	if len(compiled.Messages) == 0 {
+		var compileErr error
+		compiled, compileErr = service.compiler.Compile(conversation, mode, latestUserText, modelName)
+		if compileErr != nil {
+			service.setTurnPhase(stream, TurnPhaseFailed)
+			return service.failStream(stream, "unknown", compileErr)
+		}
+		compiled = guardCompiledConversationForProvider(compiled)
+		if stream != nil {
+			stream.mu.Lock()
+			stream.CachedCompiled = compiled
+			stream.CachedCompiledContextVersion = conversation.ContextVersion
+			stream.CachedCompiledMode = mode
+			stream.mu.Unlock()
+		}
+	}
 	compileDurationMS := time.Since(compileStartedAt).Milliseconds()
 	if compileDurationMS < 0 {
 		compileDurationMS = 0
 	}
-	if err != nil {
-		service.setTurnPhase(stream, TurnPhaseFailed)
-		return service.failStream(stream, "unknown", err)
-	}
-	compiled = guardCompiledConversationForProvider(compiled)
 	if compacted, compactErr := service.maybeCompactBeforeProvider(stream, conversation, compiled); compactErr != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", compactErr)
@@ -2606,12 +2680,32 @@ func (service *Service) checkpointCompiledConversation(stream *ActiveStream, con
 		return CompiledConversation{}, false
 	}
 	_, modelName, latestUserText, mode := checkpointPromptContext(stream)
+	if stream != nil {
+		stream.mu.Lock()
+		if stream.CachedCompiledContextVersion == conversation.ContextVersion &&
+			stream.CachedCompiledContextVersion > 0 &&
+			stream.CachedCompiledMode == mode &&
+			len(stream.CachedCompiled.Messages) > 0 {
+			cached := stream.CachedCompiled
+			stream.mu.Unlock()
+			return cached, true
+		}
+		stream.mu.Unlock()
+	}
 	compiled, err := service.compiler.Compile(conversation, mode, latestUserText, modelName)
 	if err != nil {
 		log.Printf("forwarder checkpoint token estimate failed request_id=%s conversation_id=%s err=%v", strings.TrimSpace(activeStreamRequestID(stream)), strings.TrimSpace(conversation.ConversationID), err)
 		return CompiledConversation{}, false
 	}
-	return guardCompiledConversationForProvider(compiled), true
+	guarded := guardCompiledConversationForProvider(compiled)
+	if stream != nil {
+		stream.mu.Lock()
+		stream.CachedCompiled = guarded
+		stream.CachedCompiledContextVersion = conversation.ContextVersion
+		stream.CachedCompiledMode = mode
+		stream.mu.Unlock()
+	}
+	return guarded, true
 }
 
 func (service *Service) checkpointDisplayMaxTokens(stream *ActiveStream, conversation *ConversationFile) int64 {

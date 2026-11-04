@@ -400,6 +400,9 @@ func (service *Service) finishPatchEditOperation(stream *ActiveStream, toolCallI
 	}
 	toolCall := buildCompletedEditToolCall(path, result)
 	historyToolCall := buildCompletedEditToolCall(path, compactPatchEditHistoryEditResult(path, result))
+	if result != nil && result.GetSuccess() != nil && service.execBridge != nil {
+		service.execBridge.InvalidatePathReadCache(path)
+	}
 	if err := service.appendToolResult(stream, strings.TrimSpace(toolCallID), patchEditToolName, argsJSON, summarizePatchEditResult(path, result), reasoningContent, historyToolCall); err != nil {
 		return err
 	}

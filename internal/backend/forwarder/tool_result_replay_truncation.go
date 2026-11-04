@@ -17,8 +17,8 @@ const (
 	projectedShellMaxLines         = 250   // Trần 250 dòng
 	projectedShellHeadLines        = 100   // Lấy 100 dòng đầu
 	projectedShellTailLines        = 50    // Lấy 50 dòng cuối
-	projectedGrepReplayLimit       = 32 * projectedReplayKiB
-	projectedLsReplayLimit         = 10000 // Cắt tỉa Output Ls/DirectoryList trần 10.000 ký tự
+	projectedGrepReplayLimit       = 32 * projectedReplayKiB // Giữ nguyên 32KB ở lượt chạy hiện tại để đảm bảo AI KHÔNG bị tìm kiếm thiếu
+	projectedLsReplayLimit         = 10000                   // Cắt tỉa Output Ls/DirectoryList trần 10.000 ký tự
 	projectedEditReplayLimit       = 32 * projectedReplayKiB
 	projectedPatchEditReplayLimit  = 32 * projectedReplayKiB
 	projectedWebFetchReplayLimit   = 32 * projectedReplayKiB
@@ -40,6 +40,11 @@ func limitProjectedToolResultReplay(toolName string, content string, resultText 
 		}
 		if (toolName == "Ls" || strings.EqualFold(toolName, "ls") || toolName == "DirectoryList") && len(content) > 2000 {
 			return "[Previous directory listing truncated to save context]"
+		}
+		if (toolName == "Read" || strings.EqualFold(toolName, "read")) && len(content) > 2000 {
+			if strings.Contains(content, "name: ak-") || strings.Contains(content, "/skills/") || strings.Contains(content, "\\skills\\") {
+				return "[Previous skill instructions omitted to save context]"
+			}
 		}
 	}
 	if compacted, ok := compactProjectedEditToolResultReplay(toolName, content); ok {
