@@ -1235,11 +1235,7 @@ func cloneConversationFile(conversation *ConversationFile) *ConversationFile {
 	cloned.ImportedTurnIDs = cloneByteSlices(conversation.ImportedTurnIDs)
 	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
 	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
-	if len(conversation.Entries) > 0 {
-		cloned.Entries = conversation.Entries[:len(conversation.Entries):len(conversation.Entries)]
-	} else {
-		cloned.Entries = nil
-	}
+	cloned.Entries = append([]HistoryEntry(nil), conversation.Entries...)
 	return &cloned
 }
 

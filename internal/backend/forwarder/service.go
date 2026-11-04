@@ -2597,52 +2597,16 @@ func (service *Service) publishCheckpointWithTerminalAction(requestID string, te
 	if err != nil {
 		return err
 	}
-	var projection *CheckpointProjection
-	if stream != nil {
-		stream.mu.Lock()
-		if stream.CachedProjectionContextVersion == conversation.ContextVersion &&
-			stream.CachedProjectionContextVersion > 0 &&
-			stream.CachedProjection != nil {
-			projection = cloneCheckpointProjection(stream.CachedProjection)
-		}
-		stream.mu.Unlock()
+	projection, err := service.projector.ProjectCheckpointProjection(conversation)
+	if err != nil {
+		return err
 	}
-	if projection == nil {
-		var projectErr error
-		projection, projectErr = service.projector.ProjectCheckpointProjection(conversation)
-		if projectErr != nil {
-			return projectErr
-		}
-		if projection == nil || projection.State == nil {
-			return fmt.Errorf("checkpoint projection is empty")
-		}
-		if stream != nil {
-			stream.mu.Lock()
-			stream.CachedProjection = cloneCheckpointProjection(projection)
-			stream.CachedProjectionContextVersion = conversation.ContextVersion
-			stream.mu.Unlock()
-		}
+	if projection == nil || projection.State == nil {
+		return fmt.Errorf("checkpoint projection is empty")
 	}
 	projection.State.PendingToolCalls = buildPendingToolCalls(pendingExecs, pendingInteractions)
 	service.rewriteCheckpointTokenDetailsForClient(stream, conversation, projection.State)
 	return service.queueCheckpointProjectionWithTerminal(stream, projection, terminal)
-}
-
-func cloneCheckpointProjection(projection *CheckpointProjection) *CheckpointProjection {
-	if projection == nil {
-		return nil
-	}
-	cloned := &CheckpointProjection{
-		Blobs: projection.Blobs,
-	}
-	if projection.State != nil {
-		if stateCopy, ok := proto.Clone(projection.State).(*agentv1.ConversationStateStructure); ok {
-			cloned.State = stateCopy
-		} else {
-			cloned.State = projection.State
-		}
-	}
-	return cloned
 }
 
 func (service *Service) rewriteCheckpointTokenDetailsForClient(stream *ActiveStream, conversation *ConversationFile, state *agentv1.ConversationStateStructure) {
