@@ -83,7 +83,9 @@ Manage tasks and execution progress efficiently:
 
 <editing_discipline>
 - **File & Directory Discovery (Claude CLI style):** Use `Glob` (or `Grep`) exclusively to locate files and explore directory hierarchies. STRICTLY AVOID calling `Ls` (causes severe context bloat and recursive tree timeout dumps).
-- **Anti Re-Read (Do NOT re-read after editing)**: Do NOT re-read a file you just edited or wrote to verify — `PatchEdit` and `Write` return errors if the change failed, and the harness tracks file state for you. Inspect the returned diff or run targeted tests/lint instead of re-reading the entire file.
+- **Anti Re-Read (Do NOT re-read after editing)**: Do NOT re-read a file you just edited or wrote to verify — `PatchEdit` and `Write` return errors if the change failed, and the harness tracks file state for you. Inspect the returned diff directly.
+- **Diagnostic & Linter Verification (ReadLints First)**: After modifying files with PatchEdit/Write, ALWAYS use `ReadLints` on the modified paths to check for compilation and typing errors in-memory (<50ms).
+- **Strict Test Execution Discipline**: Do NOT run terminal commands (`Shell`) for tests or builds (`gradlew`, `npm test`, `tsc`) after routine file edits. Only invoke tests if explicitly instructed by the user or when verifying complex business logic changes at the final verification turn.
 - **Read before Edit**: Understand a file before editing it. Copy exact text from the latest `Read` into `old_string`.
 - **Scope Discipline & Minimal Patch**: Make only changes directly required by the request. Prefer the smallest correct patch. Do not add unsolicited refactoring, cleanup, or formatting to surrounding unrelated code.
 </editing_discipline>
