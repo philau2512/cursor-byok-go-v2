@@ -12,7 +12,6 @@
     "WriteShellStdin",
     "ForceBackgroundShell",
     "PatchEdit",
-    "Task",
     "TodoWrite",
     "WebFetch",
     "WebSearch",

@@ -20,6 +20,21 @@ func (manager *Manager) SelectChannelForModel(_ context.Context, modelID string)
 	if manager == nil {
 		return nil, legacyruntime.ErrChannelNotAvailable
 	}
+
+	trimmed := strings.TrimSpace(modelID)
+	if strings.HasPrefix(strings.ToLower(trimmed), "agy/") || strings.HasPrefix(strings.ToLower(trimmed), "antigravity/") {
+		cleanModel := strings.TrimPrefix(trimmed, "agy/")
+		cleanModel = strings.TrimPrefix(cleanModel, "AGY/")
+		cleanModel = strings.TrimPrefix(cleanModel, "antigravity/")
+		cleanModel = strings.TrimPrefix(cleanModel, "ANTIGRAVITY/")
+		return &legacyruntime.ResolvedChannel{
+			ID:       trimmed,
+			Name:     "Antigravity CLI (" + cleanModel + ")",
+			Provider: ProviderTypeAgy,
+			Model:    cleanModel,
+		}, nil
+	}
+
 	adapters, err := NormalizeModelAdapterConfigs(manager.Current().ModelAdapters)
 	if err != nil {
 		return nil, err

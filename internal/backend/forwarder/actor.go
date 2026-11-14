@@ -433,8 +433,14 @@ func (service *Service) reconcileStream(stream *ActiveStream) error {
 
 	switch action {
 	case providerActionStart:
+		if service.isAgyRequest(stream.ModelID) {
+			return service.driveAgy(stream)
+		}
 		return service.driveProvider(stream)
 	case providerActionResume:
+		if service.isAgyRequest(stream.ModelID) {
+			return nil
+		}
 		service.setTurnPhase(stream, TurnPhaseWaitingExternal)
 		service.scheduleStreamTimer(stream, providerTimerKey(streamTimerProviderResume, ""), providerResumeDebounce, streamTimerProviderResume, "", 0, "")
 		return nil

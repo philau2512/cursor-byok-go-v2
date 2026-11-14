@@ -18,7 +18,20 @@ const (
 	DefaultFrontendBaseURL                  = "http://127.0.0.1"
 	DefaultProviderStreamIdleTimeoutSeconds = 240
 	MinProviderStreamIdleTimeoutSeconds     = 30
+
+	ProviderTypeOpenAI    = "openai"
+	ProviderTypeAnthropic = "anthropic"
+	ProviderTypeAgy       = "agy"
 )
+
+// IsAgyModelOrProvider kiểm tra xem provider hoặc model ID có thuộc hệ sinh thái AGY không.
+func IsAgyModelOrProvider(provider string, modelID string) bool {
+	if strings.EqualFold(strings.TrimSpace(provider), ProviderTypeAgy) {
+		return true
+	}
+	trimmedModel := strings.ToLower(strings.TrimSpace(modelID))
+	return strings.HasPrefix(trimmedModel, "agy/") || strings.HasPrefix(trimmedModel, "antigravity/")
+}
 
 type ModelAdapterConfig struct {
 	ID                          string `json:"id,omitempty" yaml:"-"`
@@ -100,18 +113,30 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 	normalized := make([]ModelAdapterConfig, 0, len(input))
 	seenChannelIDs := make(map[string]struct{}, len(input))
 	for _, item := range input {
-		baseURL, err := modelchannel.NormalizeBaseURL(item.BaseURL)
+		rawBaseURL := strings.TrimSpace(item.BaseURL)
+		nextType := normalizeModelAdapterType(item.Type)
+		if rawBaseURL == "" && nextType == ProviderTypeAgy {
+			rawBaseURL = "http://localhost/agy"
+		}
+		baseURL, err := modelchannel.NormalizeBaseURL(rawBaseURL)
 		if err != nil {
 			return nil, err
 		}
-		nextType := normalizeModelAdapterType(item.Type)
+		apiKey := strings.TrimSpace(item.APIKey)
+		if apiKey == "" && nextType == ProviderTypeAgy {
+			apiKey = "agy-local"
+		}
+		tooltipData := strings.TrimSpace(item.TooltipData)
+		if tooltipData == "" && nextType == ProviderTypeAgy {
+			tooltipData = "Antigravity CLI"
+		}
 		next := ModelAdapterConfig{
 			Sort:                 item.Sort,
 			DisplayName:          strings.TrimSpace(item.DisplayName),
 			Type:                 nextType,
 			BaseURL:              baseURL,
-			APIKey:               strings.TrimSpace(item.APIKey),
-			TooltipData:          strings.TrimSpace(item.TooltipData),
+			APIKey:               apiKey,
+			TooltipData:          tooltipData,
 			ModelID:              strings.TrimSpace(item.ModelID),
 			ReasoningEffort:      normalizeReasoningEffort(item.ReasoningEffort),
 			OpenAIEndpoint:       modelchannel.NormalizeOpenAIEndpoint(item.Type, item.OpenAIEndpoint),
@@ -134,10 +159,10 @@ func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterCon
 		case next.DisplayName == "":
 			return nil, errors.New("模型适配器 displayName 不能为空")
 		case next.Type == "":
-			return nil, errors.New("模型适配器 type 仅支持 openai 或 anthropic")
-		case next.APIKey == "":
+			return nil, errors.New("模型适配器 type 仅支持 openai, anthropic 或 agy")
+		case next.Type != ProviderTypeAgy && next.APIKey == "":
 			return nil, errors.New("模型适配器 apiKey 不能为空")
-		case next.TooltipData == "":
+		case next.Type != ProviderTypeAgy && next.TooltipData == "":
 			return nil, errors.New("模型适配器 tooltipData 不能为空")
 		case next.ModelID == "":
 			return nil, errors.New("模型适配器 modelID 不能为空")
@@ -289,6 +314,8 @@ func normalizeModelAdapterType(value string) string {
 		return "openai"
 	case "anthropic":
 		return "anthropic"
+	case "agy":
+		return "agy"
 	default:
 		return ""
 	}
