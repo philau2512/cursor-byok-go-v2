@@ -306,11 +306,18 @@ type Service struct {
 	interactionBridge  interactionbridge.InteractionBridge
 	appendSeq          *appendSequenceTracker
 	runSerializers     sync.Map
+	// subagentOverridesMu bảo vệ snapshot overrides mới nhất mà client gửi lên qua
+	// RunRequest/PrewarmRequest — commit message đọc live y như routing của Task subagent.
+	subagentOverridesMu          sync.Mutex
+	latestSubagentModelOverrides map[string]runtimecore.SubagentModelOverrideSelection
 }
 
 type agentModelMemory interface {
 	LastAgentModelHash() string
 	SaveLastAgentModelHash(context.Context, string) error
+	LastExplorerModelHash() string
+	SaveLastExplorerModelHash(context.Context, string) error
+	CommitMessageModel() string
 }
 
 // NewService 使用默认依赖创建 forwarder 服务。
@@ -710,6 +717,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.SubagentTypeName = strings.TrimSpace(runRequest.GetSubagentTypeName())
 		parsedOverrides := parseSubagentModelOverrides(runRequest.GetSubagentModelOverrides())
 		intent.SubagentModelOverrides = parsedOverrides.Overrides
+		service.rememberSubagentModelOverrides(parsedOverrides.Overrides)
 		service.debug.LogRuntime(context.Background(), intent.RequestID, intent.ConversationID, "subagent_model_overrides_parsed", map[string]any{
 			"override_count": parsedOverrides.RawCount,
 			"valid_count":    len(parsedOverrides.Overrides),
@@ -734,6 +742,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		if intent.ModelID == "" {
 			intent.ModelID = "default"
 		}
+		service.maybeCaptureExplorerModelHash(context.Background(), intent.SubagentTypeName, intent.ModelID, intent.SubagentModelOverrides)
 		intent.ModelName = service.resolveRequestedModelName(message, intent.ModelID)
 	case "prewarm_request":
 		prewarmRequest := message.GetPrewarmRequest()
@@ -760,6 +769,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.RequestedContextTokens = extractRequestedContextTokens(message)
 		parsedOverrides := parseSubagentModelOverrides(prewarmRequest.GetSubagentModelOverrides())
 		intent.SubagentModelOverrides = parsedOverrides.Overrides
+		service.rememberSubagentModelOverrides(parsedOverrides.Overrides)
 		if intent.SubagentTypeName != "" {
 			if override, _, ok := runtimecore.LookupSubagentModelOverride(intent.SubagentModelOverrides, intent.SubagentTypeName); ok {
 				if strings.TrimSpace(override.Selection) == "model" {
@@ -1671,8 +1681,6 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 	return nil
 }
 
-
-
 func shouldResumeAfterToolResults(finishReason string) bool {
 	switch strings.TrimSpace(finishReason) {
 	case "tool_use", "tool_calls", "function_call":
@@ -1681,8 +1689,6 @@ func shouldResumeAfterToolResults(finishReason string) bool {
 		return false
 	}
 }
-
-
 
 // driveProvider 由 actor 触发一次 provider pass，并把真实流包装成 provider_event 回投 mailbox。
 func (service *Service) driveProvider(stream *ActiveStream) error {
@@ -1987,6 +1993,74 @@ func (service *Service) maybeSaveLastAgentModelHash(conversation *ConversationFi
 	if err := service.modelMemory.SaveLastAgentModelHash(context.Background(), strings.TrimSpace(channel.ID)); err != nil {
 		log.Printf("forwarder failed to save last agent model hash channel_id=%s error=%v", strings.TrimSpace(channel.ID), err)
 	}
+}
+
+// rememberSubagentModelOverrides giữ snapshot overrides mới nhất mà client gửi lên.
+// Chỉ ghi đè khi payload non-empty: một số request không mang overrides và không được
+// xóa cấu hình đang hiệu lực.
+func (service *Service) rememberSubagentModelOverrides(overrides map[string]runtimecore.SubagentModelOverrideSelection) {
+	if service == nil || len(overrides) == 0 {
+		return
+	}
+	service.subagentOverridesMu.Lock()
+	service.latestSubagentModelOverrides = cloneSubagentModelOverrides(overrides)
+	service.subagentOverridesMu.Unlock()
+}
+
+// liveExplorerModelID trả về model ID mà Task subagent sẽ dùng *bây giờ*, resolve bằng
+// đúng chain lookup của routing subagent (type cụ thể -> explore -> generalPurpose).
+// "" khi client chưa gửi overrides (ví dụ vừa restart app, chưa có chat/prewarm nào).
+func (service *Service) liveExplorerModelID() string {
+	if service == nil {
+		return ""
+	}
+	service.subagentOverridesMu.Lock()
+	defer service.subagentOverridesMu.Unlock()
+	if len(service.latestSubagentModelOverrides) == 0 {
+		return ""
+	}
+	return explorerSubagentOverrideModelID(service.latestSubagentModelOverrides)
+}
+
+// maybeCaptureExplorerModelHash ghi lại model của subagent Explorer/explore (từ phiên chạy
+// hoặc từ override mà client gửi lên) vào config lastExplorerModelHash, phục vụ chain ưu tiên
+// model cho các tác vụ phụ như generate commit message / optimize prompt.
+func (service *Service) maybeCaptureExplorerModelHash(ctx context.Context, subagentTypeName string, intentModelID string, overrides map[string]runtimecore.SubagentModelOverrideSelection) {
+	if service == nil || service.modelMemory == nil || service.resolver == nil {
+		return
+	}
+	candidate := ""
+	switch strings.ToLower(strings.TrimSpace(subagentTypeName)) {
+	case "explore", "explorer":
+		candidate = strings.TrimSpace(intentModelID)
+	}
+	if candidate == "" || candidate == "default" {
+		candidate = explorerSubagentOverrideModelID(overrides)
+	}
+	if candidate == "" {
+		return
+	}
+	channel, err := service.resolver.SelectChannelForModel(ctx, candidate)
+	if err != nil || channel == nil || strings.TrimSpace(channel.ID) == "" {
+		if err != nil {
+			log.Printf("forwarder explorer model hash skipped model_id=%s error=%v", candidate, err)
+		}
+		return
+	}
+	if err := service.modelMemory.SaveLastExplorerModelHash(ctx, strings.TrimSpace(channel.ID)); err != nil {
+		log.Printf("forwarder failed to save last explorer model hash channel_id=%s error=%v", strings.TrimSpace(channel.ID), err)
+	}
+}
+
+// explorerSubagentOverrideModelID resolve model explore bằng đúng chain lookup mà Task
+// subagent routing dùng: "explore" rồi fallback "generalPurpose" (Cursor Settings ->
+// Models -> Task Models chỉ có một knob "Explore Subagent Model").
+func explorerSubagentOverrideModelID(overrides map[string]runtimecore.SubagentModelOverrideSelection) string {
+	override, _, ok := runtimecore.LookupSubagentModelOverride(overrides, "explore")
+	if !ok || strings.TrimSpace(override.Selection) != "model" {
+		return ""
+	}
+	return strings.TrimSpace(override.ModelID)
 }
 
 func (service *Service) persistDerivedPromptContexts(stream *ActiveStream, conversationID string, requestID string, conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string) (*ConversationFile, error) {
@@ -2541,8 +2615,6 @@ func (service *Service) closeStreamWithProviderError(
 	return service.failActiveStream(stream, conversationID, requestID, modelCallID, "provider_error", errorText)
 }
 
-
-
 func pendingBridgeCount(stream *ActiveStream) int {
 	if stream == nil {
 		return 0
@@ -2551,8 +2623,6 @@ func pendingBridgeCount(stream *ActiveStream) int {
 	defer stream.mu.Unlock()
 	return len(stream.PendingExecs) + len(stream.PendingInteractions)
 }
-
-
 
 func (service *Service) completeSuccessfulTurn(stream *ActiveStream, completion pendingTurnCompletion) error {
 	if stream == nil {
@@ -4185,8 +4255,6 @@ func readStringAny(value any) string {
 	return strings.TrimSpace(text)
 }
 
-
-
 // inferToolName 从完整 ToolCall proto 中反推出 canonical 工具名。
 func inferToolName(toolCall *agentv1.ToolCall) string {
 	if toolCall == nil || toolCall.GetTool() == nil {
@@ -4277,8 +4345,6 @@ func deriveToolNameFromPendingExec(pending runtimecore.PendingExec) string {
 		return ""
 	}
 }
-
-
 
 func isExecTool(name string) bool {
 	switch strings.TrimSpace(name) {

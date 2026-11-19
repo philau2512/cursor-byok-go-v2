@@ -56,6 +56,12 @@ type Config struct {
 	ModelAdapters             []ModelAdapterConfig `json:"modelAdapters" yaml:"modelAdapters"`
 	HomeMetrics               HomeMetricsConfig    `json:"homeMetrics" yaml:"homeMetrics"`
 	LastAgentModelHash        string               `json:"lastAgentModelHash" yaml:"lastAgentModelHash"`
+	// CommitMessageModel là model ID tường minh cho generate commit message / optimize prompt.
+	// Rỗng hoặc "auto" = dùng chain tự động (explorer -> last agent -> default).
+	CommitMessageModel string `json:"commitMessageModel,omitempty" yaml:"commitMessageModel,omitempty"`
+	// LastExplorerModelHash được tự động ghi lại từ subagent model overrides (Explorer/explore)
+	// mà Cursor client gửi lên, dùng làm model ưu tiên cho các tác vụ phụ như commit message.
+	LastExplorerModelHash string `json:"lastExplorerModelHash,omitempty" yaml:"lastExplorerModelHash,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -84,6 +90,8 @@ func NormalizeConfig(input Config) (Config, error) {
 	output.ProxyListenAddr = proxyListenAddr
 	output.HomeMetrics.IncludeCacheWriteInHitRate = input.HomeMetrics.IncludeCacheWriteInHitRate
 	output.LastAgentModelHash = strings.TrimSpace(input.LastAgentModelHash)
+	output.CommitMessageModel = strings.TrimSpace(input.CommitMessageModel)
+	output.LastExplorerModelHash = strings.TrimSpace(input.LastExplorerModelHash)
 	adapters, err := NormalizeModelAdapterConfigs(input.ModelAdapters)
 	if err != nil {
 		return Config{}, err

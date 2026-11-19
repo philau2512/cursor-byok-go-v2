@@ -12,7 +12,19 @@
 - [engine.go](file://internal/backend/agent/prompt/engine.go)
 - [core_types.go](file://internal/backend/agent/core/types.go)
 - [route.go](file://internal/backend/server/route.go)
+- [mcp_schema_heal.go](file://internal/backend/forwarder/mcp_schema_heal.go)
+- [mcp.go](file://internal/backend/agent/core/mcp.go)
+- [local_discovery.go](file://internal/backend/agent/prompt/local_discovery.go)
+- [request_context.go](file://internal/backend/forwarder/request_context.go)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Enhanced MCP integration with improved schema discovery and lazy loading mechanisms
+- Added error recovery mechanisms for MCP parameter validation failures
+- Implemented improved tool definition path tracking and resolution
+- Updated MCP prompt generation with better schema guidance and fallback descriptions
+- Added comprehensive test coverage for MCP schema healing functionality
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -20,13 +32,14 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Enhanced MCP Integration](#enhanced-mcp-integration)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains how cursor-byok implements Cursor’s Agent protocol so that a local service can act as Cursor’s backend while routing model requests to upstream OpenAI- or Anthropic-compatible providers. The implementation preserves Cursor Agent capabilities including:
+This document explains how cursor-byok implements Cursor's Agent protocol so that a local service can act as Cursor's backend while routing model requests to upstream OpenAI- or Anthropic-compatible providers. The implementation preserves Cursor Agent capabilities including:
 
 - Tool calling and tool result coordination
 - Skills discovery and slash-command invocation
@@ -93,7 +106,7 @@ The Agent protocol implementation is centered around five cooperating components
 4. **Model router**: Resolves configured channels and selects OpenAI or Anthropic adapters based on provider metadata.
 5. **Prompt engine**: Builds mode-aware system prompts, injects skills, MCP descriptors, rules, user info, and request context, and returns messages plus tools for the model.
 
-These components together preserve Cursor’s Agent contract: clients continue sending `run_request`, `conversation_action`, `exec_client_message`, `interaction_response`, and related messages, while the server replies with interaction updates, execution messages, conversation checkpoints, and other server-side events.
+These components together preserve Cursor's Agent contract: clients continue sending `run_request`, `conversation_action`, `exec_client_message`, `interaction_response`, and related messages, while the server replies with interaction updates, execution messages, conversation checkpoints, and other server-side events.
 
 **Section sources**
 - [inbound.go:38-96](file://internal/backend/agent/protocol/inbound.go#L38-L96)
@@ -155,7 +168,7 @@ The Agent protocol is defined in `agent_v1.proto`. The most important top-level 
 | `McpTools` | Declares MCP tool availability for the run. |
 | `ConversationStateStructure` | Structured conversation state carried across turns and checkpoints. |
 
-These definitions allow the local service to remain compatible with Cursor’s expected Agent wire format while internally translating between Cursor’s protocol and upstream provider formats.
+These definitions allow the local service to remain compatible with Cursor's expected Agent wire format while internally translating between Cursor's protocol and upstream provider formats.
 
 **Section sources**
 - [agent_v1.proto:56-139](file://proto/agent_v1.proto#L56-L139)
@@ -383,23 +396,6 @@ Compile --> Model
 - [types.go:140-216](file://internal/backend/forwarder/types.go#L140-L216)
 - [core_types.go:410-427](file://internal/backend/agent/core/types.go#L410-L427)
 
-### MCP and Skills Integration
-The prompt engine integrates Cursor’s context-rich request model into the compiled prompt:
-
-- **Skills**: Available skills are listed in `<agent_skills>`. Slash commands like `/skill-name` trigger a reminder to read the skill file and follow its instructions.
-- **MCP file system**: MCP servers can be described via file-system descriptors under a workspace MCP directory. Embedded descriptors satisfy schema discovery without requiring live discovery.
-- **MCP meta tools**: Modern Cursor clients receive `<mcp_meta_tools>` with server and tool descriptors, allowing direct `CallMcpTool` usage.
-- **Rules, user info, transcripts, subagents, and PR/commit attribution**: These sections are assembled from `request_context` and injected as contextual messages.
-
-This design allows MCP and Skills to remain part of the model-visible prompt surface even though the actual tool execution may be delegated to local bridges or external MCP servers.
-
-**Section sources**
-- [engine.go:333-415](file://internal/backend/agent/prompt/engine.go#L333-L415)
-- [engine.go:496-537](file://internal/backend/agent/prompt/engine.go#L496-L537)
-- [engine.go:553-606](file://internal/backend/agent/prompt/engine.go#L553-L606)
-- [engine.go:633-701](file://internal/backend/agent/prompt/engine.go#L633-L701)
-- [engine.go:740-800](file://internal/backend/agent/prompt/engine.go#L740-L800)
-
 ### Routing Between Cursor Clients and Upstream Providers
 The model router resolves a requested model ID to a configured channel and then selects an adapter:
 
@@ -447,6 +443,81 @@ Key responsibilities include:
 - [route.go:68-129](file://internal/backend/server/route.go#L68-L129)
 - [route.go:131-171](file://internal/backend/server/route.go#L131-L171)
 
+## Enhanced MCP Integration
+
+### Schema Discovery and Lazy Loading
+The enhanced MCP integration introduces sophisticated schema discovery mechanisms that improve tool reliability and reduce token usage:
+
+**Schema Budget Management**: The system implements tiered budget limits for MCP tool schemas:
+- Full schema budget: 1200 bytes for inline schema embedding
+- Slim schema budget: 600 bytes for type/required-only schemas
+- Healing budget: 4096 bytes for error recovery schema injection
+
+**Lazy Loading Strategy**: When schemas exceed budget limits, the system falls back to lazy loading via `definition_path`, allowing models to access full schemas on-demand rather than embedding them in every prompt.
+
+**Automatic Schema Hydration**: The `hydrateLocalMCPDescriptors` function automatically enriches MCP tool descriptors by reading definition files and compacting schemas, providing both descriptions and parameter schemas where available.
+
+```mermaid
+flowchart TD
+ToolCall["MCP Tool Call"] --> Validate["Parameter Validation"]
+Validate --> |Success| Execute["Execute Tool"]
+Validate --> |Failure| CheckError["Check Error Pattern"]
+CheckError --> |Parameter Error| HealSchema["Heal Schema Recovery"]
+CheckError --> |Other Error| ReturnError["Return Original Error"]
+HealSchema --> ReadDefinition["Read Definition File"]
+ReadDefinition --> CompactSchema["Compact Schema"]
+CompactSchema --> EnrichError["Enrich Error with Schema"]
+EnrichError --> Retry["Retry with Better Parameters"]
+```
+
+**Diagram sources**
+- [mcp_schema_heal.go:35-62](file://internal/backend/forwarder/mcp_schema_heal.go#L35-L62)
+- [local_discovery.go:659-723](file://internal/backend/agent/prompt/local_discovery.go#L659-L723)
+
+### Error Recovery Mechanisms
+The MCP schema healing system provides robust error recovery for parameter validation failures:
+
+**Error Pattern Detection**: The system recognizes common MCP parameter validation error patterns including "invalid parameters", "is required", "missing required", "unknown parameter", and "validation error".
+
+**Schema Injection**: When parameter validation fails, the system automatically reads the full tool definition file and injects the complete parameter schema into the error response, enabling the model to correct its arguments and retry successfully.
+
+**Path Resolution**: The `resolveMCPToolDefinitionPath` function intelligently resolves tool definition paths using multiple candidate strategies, including canonical lookup names, server/tool combinations, and direct tool names.
+
+**Caching Strategy**: Schema reads are cached with file modification time checks to avoid redundant disk I/O while maintaining freshness when definition files change.
+
+### Improved Tool Definition Path Tracking
+The enhanced path tracking system maintains comprehensive mappings between tool identifiers and their definition file locations:
+
+**Multi-Key Mapping**: Tool definition paths are tracked under multiple keys to support different naming conventions:
+- Direct tool names
+- Canonical server-tool combinations (e.g., "server-name")
+- Provider identifier combinations
+
+**Automatic Path Construction**: When explicit definition paths are not provided, the system automatically constructs paths using the folder structure convention (`<folder>/tools/<tool>.json`).
+
+**Context Collection**: The `collectMCPToolDefinitionPaths` function aggregates definition paths from both file system MCP descriptors and meta tool options, creating a comprehensive lookup table for error recovery.
+
+### Enhanced Prompt Generation
+The prompt engine now generates more informative MCP context sections:
+
+**Embedded Schema Guidance**: MCP file system sections now include embedded tool descriptors with compact input schemas, providing models with parameter names, types, and required fields directly in the prompt.
+
+**Fallback Descriptions**: Specialized fallback descriptions are provided for known tools like fast-context search, ensuring models have useful guidance even when descriptor information is incomplete.
+
+**Meta Tool Support**: Modern Cursor clients receive `<mcp_meta_tools>` sections with server and tool descriptors, allowing direct `CallMcpTool` usage without requiring separate tool discovery calls.
+
+**Definition Path References**: All MCP tool references now include `definition_path` elements, enabling models to access full schemas when needed for complex parameter validation scenarios.
+
+**Section sources**
+- [mcp_schema_heal.go:17-62](file://internal/backend/forwarder/mcp_schema_heal.go#L17-L62)
+- [mcp_schema_heal.go:64-102](file://internal/backend/forwarder/mcp_schema_heal.go#L64-L102)
+- [mcp_schema_heal.go:114-174](file://internal/backend/forwarder/mcp_schema_heal.go#L114-L174)
+- [local_discovery.go:650-723](file://internal/backend/agent/prompt/local_discovery.go#L650-L723)
+- [local_discovery.go:757-805](file://internal/backend/agent/prompt/local_discovery.go#L757-L805)
+- [request_context.go:379-427](file://internal/backend/forwarder/request_context.go#L379-L427)
+- [engine.go:633-701](file://internal/backend/agent/prompt/engine.go#L633-L701)
+- [engine.go:740-829](file://internal/backend/agent/prompt/engine.go#L740-L829)
+
 ## Dependency Analysis
 The following diagram shows the primary dependencies between Agent protocol components:
 
@@ -460,6 +531,10 @@ ForwarderService --> ModelRouter["model/router.go"]
 PromptEngine --> CoreTypes["core/types.go"]
 ForwarderService --> ForwarderTypes["forwarder/types.go"]
 ServerRoute["server/route.go"] --> ForwarderService
+ForwarderService --> MCPSchemaHeal["mcp_schema_heal.go"]
+MCPSchemaHeal --> CoreMCP["core/mcp.go"]
+PromptEngine --> LocalDiscovery["prompt/local_discovery.go"]
+ForwarderService --> RequestContext["forwarder/request_context.go"]
 ```
 
 **Diagram sources**
@@ -472,6 +547,10 @@ ServerRoute["server/route.go"] --> ForwarderService
 - [core_types.go:76-125](file://internal/backend/agent/core/types.go#L76-L125)
 - [types.go:140-216](file://internal/backend/forwarder/types.go#L140-L216)
 - [route.go:37-51](file://internal/backend/server/route.go#L37-L51)
+- [mcp_schema_heal.go:1-174](file://internal/backend/forwarder/mcp_schema_heal.go#L1-L174)
+- [mcp.go:1-111](file://internal/backend/agent/core/mcp.go#L1-L111)
+- [local_discovery.go:650-805](file://internal/backend/agent/prompt/local_discovery.go#L650-L805)
+- [request_context.go:379-427](file://internal/backend/forwarder/request_context.go#L379-L427)
 
 **Section sources**
 - [inbound.go:38-96](file://internal/backend/agent/protocol/inbound.go#L38-L96)
@@ -495,6 +574,9 @@ Several mechanisms in the codebase are designed to keep streaming responsive and
 | Provider message sanitization | Removes placeholders, merges adjacent tool calls, trims dangling calls and prefill | Reduces provider rejection risk and avoids unnecessary token usage. |
 | Thinking effort normalization | Maps runtime thinking effort to provider-specific reasoning effort | Avoids sending unsupported or conflicting reasoning parameters. |
 | Supported tool whitelist | Limits exposed tools to implemented runtime capabilities | Prevents model calls from invoking unhandled tools and failing entire runs. |
+| MCP schema caching | File modification time-based caching for schema reads | Reduces disk I/O while maintaining schema freshness. |
+| Schema budget limits | Tiered budgets for inline vs lazy-loaded schemas | Balances prompt size with schema completeness. |
+| Path resolution optimization | Multi-key lookup with canonical name support | Improves tool definition path resolution performance. |
 
 Streaming performance depends heavily on:
 
@@ -502,6 +584,7 @@ Streaming performance depends heavily on:
 - How efficiently the provider adapter emits incremental events.
 - How fast the forwarder translates provider events into `AgentServerMessage`.
 - Whether the client consumes the SSE stream without falling too far behind the backlog.
+- How effectively the MCP schema healing reduces retry loops through better parameter guidance.
 
 Concurrent tool execution is coordinated through pending execution and interaction state. Long-running tools such as shell streams should use background shell handling and await semantics to avoid blocking the main streaming loop.
 
@@ -513,6 +596,8 @@ Concurrent tool execution is coordinated through pending execution and interacti
 - [router.go:363-420](file://internal/backend/agent/model/router.go#L363-L420)
 - [router.go:422-444](file://internal/backend/agent/model/router.go#L422-L444)
 - [core_types.go:410-427](file://internal/backend/agent/core/types.go#L410-L427)
+- [mcp_schema_heal.go:104-144](file://internal/backend/forwarder/mcp_schema_heal.go#L104-L144)
+- [local_discovery.go:650-723](file://internal/backend/agent/prompt/local_discovery.go#L650-L723)
 
 ## Troubleshooting Guide
 Common issues and their likely locations:
@@ -529,6 +614,9 @@ Common issues and their likely locations:
 | Tool call never completes | Missing tool result, broken execution bridge, or unsupported tool. | [core_types.go:337-365](file://internal/backend/agent/core/types.go#L337-L365), [core_types.go:410-427](file://internal/backend/agent/core/types.go#L410-L427) |
 | MCP tools not visible | MCP descriptors missing or disabled in request context. | [engine.go:633-701](file://internal/backend/agent/prompt/engine.go#L633-L701), [engine.go:740-800](file://internal/backend/agent/prompt/engine.go#L740-L800) |
 | Skills not invoked | Slash command not matched or skill not listed in request context. | [engine.go:496-537](file://internal/backend/agent/prompt/engine.go#L496-L537), [engine.go:553-606](file://internal/backend/agent/prompt/engine.go#L553-L606) |
+| MCP parameter validation errors | Missing or incorrect tool parameters. | [mcp_schema_heal.go:35-62](file://internal/backend/forwarder/mcp_schema_heal.go#L35-L62) |
+| MCP schema not found | Definition path resolution failed or file missing. | [mcp_schema_heal.go:64-102](file://internal/backend/forwarder/mcp_schema_heal.go#L64-L102), [local_discovery.go:659-697](file://internal/backend/agent/prompt/local_discovery.go#L659-L697) |
+| Excessive MCP schema size | Schema exceeds budget limits, triggering lazy loading. | [local_discovery.go:650-723](file://internal/backend/agent/prompt/local_discovery.go#L650-L723) |
 
 Debug logging is present throughout the forwarder and broker layers. When diagnosing Agent protocol problems, inspect:
 
@@ -537,6 +625,8 @@ Debug logging is present throughout the forwarder and broker layers. When diagno
 - Subagent model override parsing results.
 - SSE subscribe/unsubscribe and heartbeat logs.
 - Terminal event codes and messages.
+- MCP schema healing attempts and success rates.
+- Tool definition path resolution results.
 
 **Section sources**
 - [service.go:370-448](file://internal/backend/forwarder/service.go#L370-L448)
@@ -548,11 +638,13 @@ Debug logging is present throughout the forwarder and broker layers. When diagno
 - [engine.go:496-537](file://internal/backend/agent/prompt/engine.go#L496-L537)
 - [engine.go:633-701](file://internal/backend/agent/prompt/engine.go#L633-L701)
 - [engine.go:740-800](file://internal/backend/agent/prompt/engine.go#L740-L800)
+- [mcp_schema_heal.go:35-102](file://internal/backend/forwarder/mcp_schema_heal.go#L35-L102)
+- [local_discovery.go:659-723](file://internal/backend/agent/prompt/local_discovery.go#L659-L723)
 
 ## Conclusion
-cursor-byok’s Agent protocol implementation provides a robust bridge between Cursor’s native Agent wire format and upstream model providers. It preserves Cursor’s tool calling, Skills, MCP, and multi-turn conversation semantics by:
+cursor-byok's Agent protocol implementation provides a robust bridge between Cursor's native Agent wire format and upstream model providers. It preserves Cursor's tool calling, Skills, MCP, and multi-turn conversation semantics by:
 
-- Decoding Cursor’s `AgentClientMessage` into typed protobuf structures.
+- Decoding Cursor's `AgentClientMessage` into typed protobuf structures.
 - Mapping client actions to internal runtime commands.
 - Compiling mode-aware prompts with tools, skills, MCP descriptors, and request context.
 - Selecting OpenAI or Anthropic adapters through a configurable channel resolver.
@@ -560,4 +652,6 @@ cursor-byok’s Agent protocol implementation provides a robust bridge between C
 - Publishing structured `AgentServerMessage` events through a buffered, cursor-aware stream broker.
 - Supporting heartbeats, cancellation, terminal errors, and cleanup to maintain stable long-lived Agent sessions.
 
-This architecture allows users to bring their own model APIs while keeping Cursor’s full Agent experience intact.
+The enhanced MCP integration significantly improves reliability through intelligent schema discovery, automatic error recovery, and efficient path tracking. These improvements enable more robust tool execution with better parameter validation, reduced retry loops, and improved model guidance for complex MCP tool interactions.
+
+This architecture allows users to bring their own model APIs while keeping Cursor's full Agent experience intact, with enhanced MCP support providing better tool discovery, parameter validation, and error recovery capabilities.

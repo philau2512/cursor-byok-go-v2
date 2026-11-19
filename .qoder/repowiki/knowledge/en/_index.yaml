@@ -3,7 +3,7 @@ schema_version: 1
 locale: en-US
 branch: enhance/optimize-stable-go-byok-v2
 nodes_managed: true
-exported_at: "2026-11-19T20:27:04Z"
+exported_at: "2026-11-19T20:32:07Z"
 modules:
     "":
         dir_name: Cursor BYOK Go v2 Desktop Application

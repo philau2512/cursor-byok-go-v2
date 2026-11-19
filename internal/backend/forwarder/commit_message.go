@@ -56,7 +56,7 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 		return nil, commitMessageConnectError(recorder, connect.CodeInternal, err)
 	}
 	modelCallID := requestID + "-model"
-	modelID, modelSource, lastAgentModelHash := service.resolveCommitMessageModelID(ctx)
+	modelID, modelSource, modelSourceValue := service.resolveCommitMessageModelID(ctx)
 	accumulated := ""
 	artifactPaths := &modeladapter.LLMArtifactPaths{}
 	err = service.provider.StartStream(ctx, ProviderRequest{
@@ -68,7 +68,7 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 		Messages:       messages,
 		Tools:          nil,
 		MaxTokens:      commitMessageMaxOutputTokens,
-		CompileSummary: fmt.Sprintf("generate commit message diffs=%d previous_commits=%d model_source=%s last_agent_model_hash=%s", len(diffs), len(req.Msg.GetPreviousCommitMessages()), modelSource, lastAgentModelHash),
+		CompileSummary: fmt.Sprintf("generate commit message diffs=%d previous_commits=%d model_source=%s model_source_value=%s", len(diffs), len(req.Msg.GetPreviousCommitMessages()), modelSource, modelSourceValue),
 		Observer:       recorder,
 		ArtifactPaths:  artifactPaths,
 	}, func(event modeladapter.ModelEvent) error {
@@ -153,22 +153,51 @@ func (service *Service) commitMessageHistoryRoot() string {
 	return strings.TrimSpace(service.store.HistoryDir())
 }
 
+// resolveCommitMessageModelID chọn model cho tác vụ phụ (commit message, optimize prompt)
+// theo chain ưu tiên:
+//  1. commitMessageModel       — user cấu hình tường minh trong config (model ID bất kỳ)
+//  2. explorer_override_live   — snapshot subagent_model_overrides mới nhất từ client,
+//     resolve đúng chain mà Task subagent routing dùng (explore -> generalPurpose)
+//  3. explorer_override        — lastExplorerModelHash đã persist (rơi lại khi app vừa
+//     restart, chưa có run_request/prewarm nào mang overrides)
+//  4. last_agent_model_hash    — model chat chính gần nhất (hành vi cũ)
+//  5. default_fallback         — để resolver tự chọn channel mặc định
+//
+// Ba giá trị trả về: channel ID đã validate, tên nguồn, giá trị gốc của nguồn.
 func (service *Service) resolveCommitMessageModelID(ctx context.Context) (string, string, string) {
 	if service == nil || service.modelMemory == nil || service.resolver == nil {
 		return "", "default_fallback", ""
 	}
-	hash := strings.TrimSpace(service.modelMemory.LastAgentModelHash())
-	if hash == "" {
-		return "", "default_fallback", ""
+	candidates := []struct {
+		source string
+		value  string
+		// strict=true yêu cầu channel resolve ra phải đúng ID đã lưu (hash bền vững);
+		// giá trị config tường minh được phép là model ID resolve sang channel bất kỳ.
+		strict bool
+	}{
+		{source: "commit_message_config", value: strings.TrimSpace(service.modelMemory.CommitMessageModel()), strict: false},
+		{source: "explorer_override_live", value: service.liveExplorerModelID(), strict: false},
+		{source: "explorer_override", value: strings.TrimSpace(service.modelMemory.LastExplorerModelHash()), strict: true},
+		{source: "last_agent_model_hash", value: strings.TrimSpace(service.modelMemory.LastAgentModelHash()), strict: true},
 	}
-	channel, err := service.resolver.SelectChannelForModel(ctx, hash)
-	if err != nil || channel == nil || strings.TrimSpace(channel.ID) != hash {
-		if err != nil {
-			log.Printf("forwarder commit message ignored invalid last agent model hash=%s error=%v", hash, err)
+	for _, candidate := range candidates {
+		if candidate.value == "" {
+			continue
 		}
-		return "", "default_fallback", hash
+		channel, err := service.resolver.SelectChannelForModel(ctx, candidate.value)
+		if err != nil || channel == nil || strings.TrimSpace(channel.ID) == "" {
+			if err != nil {
+				log.Printf("forwarder commit message ignored candidate source=%s value=%s error=%v", candidate.source, candidate.value, err)
+			}
+			continue
+		}
+		if candidate.strict && strings.TrimSpace(channel.ID) != candidate.value {
+			log.Printf("forwarder commit message ignored stale candidate source=%s value=%s resolved_channel=%s", candidate.source, candidate.value, strings.TrimSpace(channel.ID))
+			continue
+		}
+		return strings.TrimSpace(channel.ID), candidate.source, candidate.value
 	}
-	return hash, "last_agent_model_hash", hash
+	return "", "default_fallback", ""
 }
 
 func recordCommitMessageIncomingRequest(recorder *commitMessageLogRecorder, requestID string, request *aiserverv1.WriteGitCommitMessageRequest) error {

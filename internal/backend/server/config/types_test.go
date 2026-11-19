@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func testModelAdapter(displayName string, sortValue int) ModelAdapterConfig {
 	return ModelAdapterConfig{
@@ -78,5 +81,30 @@ func TestNormalizeModelAdapterConfigsRejectsUnknownReasoningEffort(t *testing.T)
 
 	if _, err := NormalizeModelAdapterConfigs([]ModelAdapterConfig{adapter}); err == nil {
 		t.Fatal("NormalizeModelAdapterConfigs should reject an unknown reasoning effort")
+	}
+}
+
+func TestNormalizeConfigKeepsCommitMessageModelFields(t *testing.T) {
+	input := DefaultConfig()
+	input.CommitMessageModel = "  gemini-flash  "
+	input.LastExplorerModelHash = " hash-123 "
+
+	normalized, err := NormalizeConfig(input)
+	if err != nil {
+		t.Fatalf("NormalizeConfig: %v", err)
+	}
+	if normalized.CommitMessageModel != "gemini-flash" {
+		t.Fatalf("CommitMessageModel = %q, want trimmed value", normalized.CommitMessageModel)
+	}
+	if normalized.LastExplorerModelHash != "hash-123" {
+		t.Fatalf("LastExplorerModelHash = %q, want trimmed value", normalized.LastExplorerModelHash)
+	}
+
+	blank, err := NormalizeConfig(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NormalizeConfig default: %v", err)
+	}
+	if !strings.EqualFold(blank.CommitMessageModel, "") || !strings.EqualFold(blank.LastExplorerModelHash, "") {
+		t.Fatal("new fields must default to empty")
 	}
 }
