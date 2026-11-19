@@ -648,6 +648,48 @@ func TestSlashCommandAutoInjectsSkillReminder(t *testing.T) {
 	}
 }
 
+func TestSlashCommandSimilarNameDoesNotHijackSkill(t *testing.T) {
+	tempDir := t.TempDir()
+	skillPath := filepath.Join(tempDir, "skills", "ak-plan", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("Plan skill instructions"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	compile := func(userText string) string {
+		t.Helper()
+		compiled, err := NewEngine().Compile(CompileInput{
+			Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT,
+			CurrentUserMessageText: userText,
+			RequestContext: &agentv1.RequestContext{
+				AgentSkills: []*agentv1.AgentSkill{
+					{FullPath: skillPath, Description: "Plan skill description"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		var text string
+		for _, m := range compiled.Messages {
+			text += m.Content + "\n"
+		}
+		return text
+	}
+
+	// "/plan" là command builtin của Cursor, không được auto-invoke skill "ak-plan".
+	if text := compile("/plan refactor the auth module"); strings.Contains(text, "Using skill: ak-plan") {
+		t.Fatal("similar-name builtin command must not hijack ak-* skill")
+	}
+
+	// Chỉ invocation tường minh với đúng tên skill mới được nạp.
+	if text := compile("/ak-plan refactor the auth module"); !strings.Contains(text, "Using skill: ak-plan") {
+		t.Fatal("exact skill name invocation should still load the skill")
+	}
+}
+
 func TestPruneHistoricalShellOutputs(t *testing.T) {
 	// Create a sequence of 8 user turns
 	var messages []Message
@@ -771,4 +813,3 @@ func TestBuildRequestContextReplayMessagesDeduplicated(t *testing.T) {
 		t.Fatalf("turn 3 missing updated rule content: %s", msgs3[0].Content)
 	}
 }
-

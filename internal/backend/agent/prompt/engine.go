@@ -20,13 +20,13 @@ import (
 const todoSectionReminderMessage = "<system_reminder>\nYou are currently under the todo section, be sure to track tasks and do not forget to update.\n</system_reminder>"
 
 type cachedBaselineToolsEntry struct {
-	tools          []json.RawMessage
-	toolNames      []string
+	tools           []json.RawMessage
+	toolNames       []string
 	hiddenToolNames []string
 }
 
 var (
-	cachedBaselineTools = make(map[promptassets.Mode]cachedBaselineToolsEntry)
+	cachedBaselineTools    = make(map[promptassets.Mode]cachedBaselineToolsEntry)
 	cachedSanitizedPrompts = make(map[promptassets.Mode]string)
 )
 
@@ -53,8 +53,8 @@ func init() {
 					}
 				}
 				cachedBaselineTools[mode] = cachedBaselineToolsEntry{
-					tools:          filtered,
-					toolNames:      names,
+					tools:           filtered,
+					toolNames:       names,
 					hiddenToolNames: nil,
 				}
 			}
@@ -180,8 +180,8 @@ func (engine *Engine) Compile(input CompileInput) (CompiledPrompt, error) {
 	}
 
 	var (
-		tools          []json.RawMessage
-		toolNames      []string
+		tools           []json.RawMessage
+		toolNames       []string
 		hiddenToolNames []string
 	)
 	if cached, ok := cachedBaselineTools[assetMode]; ok {
@@ -500,7 +500,7 @@ func buildRequestContextAgentSkillsSection(requestContext *agentv1.RequestContex
 	}
 	lines := []string{
 		"<agent_skills>",
-		"When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge. To use a skill, read the skill file at the provided absolute path using the Read tool, then follow the instructions within. When a skill is relevant or invoked via slash command, declare '⚡ Using skill: <skill_name>' at the beginning of your response and read the skill file IMMEDIATELY as your first action. NEVER just announce or mention a skill without actually reading and following it. Only use skills listed below.",
+		"When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge. To use a skill, read the skill file at the provided absolute path using the Read tool, then follow the instructions within. The '⚡ Using skill: <skill_name>' declaration and the mandatory first-action read apply ONLY to explicit slash-command invocations marked by a system reminder; a topic that merely resembles a skill is not an invocation. NEVER just announce or mention a skill without actually reading and following it. Only use skills listed below.",
 		"",
 		`<available_skills description="Skills the agent can use. Use the Read tool with the provided absolute path to fetch full contents.">`,
 	}
@@ -550,7 +550,10 @@ func deriveSkillNameFromPath(fullPath string) string {
 	return base
 }
 
-// detectInvokedSkill 检测用户输入是否显式调用了 Slash Command 形式的技能（例如 /brainstorm 或 /ak-brainstorm）。
+// detectInvokedSkill 检测用户输入是否显式调用了 Slash Command 形式的技能。
+// Chỉ nhận slash command trùng CHÍNH XÁC tên skill (không strip/append prefix "ak-"):
+// các command builtin của Cursor (/plan, /review, /test...) trùng tên rút gọn với
+// skill ak-* sẽ không còn tự nạp skill ngoài ý muốn.
 func detectInvokedSkill(userText string, requestContext *agentv1.RequestContext) (name string, path string) {
 	if requestContext == nil || strings.TrimSpace(userText) == "" {
 		return "", ""
@@ -581,7 +584,7 @@ func detectInvokedSkill(userText string, requestContext *agentv1.RequestContext)
 		sName := deriveSkillNameFromPath(p)
 		sNameLower := strings.ToLower(sName)
 		for _, cmd := range candidateCommands {
-			if cmd == sNameLower || cmd == strings.TrimPrefix(sNameLower, "ak-") || "ak-"+cmd == sNameLower {
+			if cmd == sNameLower {
 				return sName, p
 			}
 		}
@@ -597,7 +600,7 @@ func detectInvokedSkill(userText string, requestContext *agentv1.RequestContext)
 		sName := deriveSkillNameFromPath(p)
 		sNameLower := strings.ToLower(sName)
 		for _, cmd := range candidateCommands {
-			if cmd == sNameLower || cmd == strings.TrimPrefix(sNameLower, "ak-") || "ak-"+cmd == sNameLower {
+			if cmd == sNameLower {
 				return sName, p
 			}
 		}
@@ -1495,4 +1498,3 @@ func truncateShellOutputLinesAndCharsText(text string) string {
 	}
 	return text
 }
-
