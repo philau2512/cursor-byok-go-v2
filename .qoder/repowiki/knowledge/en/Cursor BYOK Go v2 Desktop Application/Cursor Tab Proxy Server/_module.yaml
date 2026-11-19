@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: cursor_tab_server
+title: Cursor Tab Proxy Server
+scope:
+    - cursor-tab-server/
+source_files: []
+depends_on: []
+related_to: []

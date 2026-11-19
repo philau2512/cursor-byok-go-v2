@@ -1,0 +1,8 @@
+Three independent sub-trees with no shared code:
+- `scripts/client-patch/` — a self-contained browser-side JavaScript injection (`cursor-prompt-optimizer.js`) that mounts an icon button into Cursor's Composer UI and POSTs prompts to `http://127.0.0.1:18090/api/prompt/optimize`, falling back through four editor-write strategies (Lexical API → execCommand → simulated paste → direct DOM). `install-patch.ps1` copies the JS into the installed Cursor Electron bundle and injects a `<script>` tag into `workbench.html`.
+- `scripts/historymetrics/main.go` — a standalone Go CLI (`go run ./scripts/historymetrics`) that reads `history/usage.json` via `cursor/internal/appdata` and `cursor/internal/historymetrics` and prints a human-readable summary; it is a leaf consumer of internal packages, not part of the main binary.
+- `scripts/release/main.go` — a multi-subcommand Go CLI (`version` / `notes` / `manifest`) driven by `flag.NewFlagSet` per subcommand, reading version from `build/config.yml` (gopkg.in/yaml.v3), computing SHA-256 checksums over prebuilt assets, and emitting a JSON update manifest targeting GitHub Releases URLs for `macos-arm64`, `macos-amd64`, `windows-amd64`, `linux-amd64`.
+- `.agents/skills/` — Markdown-based skills consumed by AI agents (e.g. `coding-guidance/SKILL.md` documents local-mode protocol rules, Cursor bundle paths, and debugging workflow); no executable code.
+- `.github/PULL_REQUEST_TEMPLATE.md` — a bilingual (Vietnamese/English) PR template with sections for What / Related Issue / How to Test.
+
+Dependency direction is one-way: scripts consume repo internals (`internal/appdata`, `internal/historymetrics`) but nothing in the main app depends on these scripts.

@@ -692,7 +692,7 @@ func buildRequestContextMCPFileSystemSection(requestContext *agentv1.RequestCont
 	}
 
 	return fmt.Sprintf(
-		"<mcp_file_system>\n\n## MCP Tool Access\n\nYou have access to MCP tools through the MCP FileSystem. Embedded MCP tool descriptors below already satisfy the schema-discovery requirement when present. Only browse descriptor files under %s/<server>/tools/ when a server below does not include the tool you need.\n\n## MCP Resource Access\n\nYou also have access to MCP resources through the MCP FileSystem. Resource descriptors live under %s/<server>/resources/.\n\nAvailable MCP servers:\n\n<mcp_file_system_servers>%s</mcp_file_system_servers>%s\n</mcp_file_system>",
+		"<mcp_file_system>\n\n## MCP Tool Access\n\nYou have access to MCP tools through the MCP FileSystem. Embedded MCP tool descriptors below include each tool's description and, when present, a compact input schema (parameter names, types, required fields). Invoke MCP tools with CallMcpTool using exactly the parameter names from that schema; never invent parameter names. If a descriptor has no input_schema, or a call fails parameter validation, Read the tool JSON at its definition_path (or under %s/<server>/tools/<tool>.json) to obtain the full schema before calling or retrying.\n\n## MCP Resource Access\n\nYou also have access to MCP resources through the MCP FileSystem. Resource descriptors live under %s/<server>/resources/.\n\nAvailable MCP servers:\n\n<mcp_file_system_servers>%s</mcp_file_system_servers>%s\n</mcp_file_system>",
 		mcpRoot,
 		mcpRoot,
 		strings.Join(serverEntries, "\n\n"),
@@ -923,7 +923,11 @@ func buildEmbeddedMCPDescriptorSection(descriptor *agentv1.McpDescriptor, server
 		if description != "" {
 			entry += "\n<description>" + escapePromptXML(description) + "</description>"
 		}
-		if inputSchema := strings.TrimSpace(compactProtoJSON(tool.GetInputSchema())); inputSchema != "" {
+		inputSchema := strings.TrimSpace(tool.GetInputSchemaJson())
+		if inputSchema == "" && tool.GetInputSchema() != nil {
+			inputSchema = strings.TrimSpace(compactProtoJSON(tool.GetInputSchema()))
+		}
+		if inputSchema != "" {
 			entry += "\n<input_schema>" + escapePromptXML(inputSchema) + "</input_schema>"
 		}
 		entry += "\n</mcp_tool>"

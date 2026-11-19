@@ -1,0 +1,3 @@
+- Error paths return wrapped errors via `fmt.Errorf("...: %w", err)` and log human-readable messages through `log.Printf` rather than panicking.
+- HTTP header forwarding goes through dedicated `copyRequestHeaders` / `copyResponseHeaders` helpers that skip hop-by-hop headers listed in the `hopByHopHeaders` set instead of copying headers inline.
+- Configuration is loaded once at process start from a YAML file via `os.ReadFile` + `yaml.Unmarshal`, with empty/missing values surfaced as descriptive errors.

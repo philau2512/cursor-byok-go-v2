@@ -376,6 +376,56 @@ func collectMCPToolServers(requestContext *agentv1.RequestContext) map[string]st
 	return servers
 }
 
+// collectMCPToolDefinitionPaths ánh xạ tên tool (cả alias canonical server/tool) tới đường dẫn
+// file định nghĩa schema trên đĩa, phục vụ heal lỗi tham số MCP bằng schema đầy đủ khi runtime.
+func collectMCPToolDefinitionPaths(requestContext *agentv1.RequestContext) map[string]string {
+	if requestContext == nil {
+		return nil
+	}
+
+	paths := make(map[string]string)
+	addDescriptors := func(descriptors []*agentv1.McpDescriptor) {
+		for _, descriptor := range descriptors {
+			if descriptor == nil {
+				continue
+			}
+			serverIdentifier := strings.TrimSpace(firstNonEmpty(descriptor.GetServerIdentifier(), descriptor.GetServerName()))
+			serverName := strings.TrimSpace(descriptor.GetServerName())
+			folderPath := strings.TrimSpace(descriptor.GetFolderPath())
+			for _, tool := range descriptor.GetTools() {
+				if tool == nil {
+					continue
+				}
+				toolName := strings.TrimSpace(tool.GetToolName())
+				if toolName == "" {
+					continue
+				}
+				definitionPath := strings.TrimSpace(tool.GetDefinitionPath())
+				if definitionPath == "" && folderPath != "" {
+					definitionPath = filepath.Join(folderPath, "tools", toolName+".json")
+				}
+				if definitionPath == "" {
+					continue
+				}
+				paths[toolName] = definitionPath
+				if serverName != "" {
+					paths[forwarderCanonicalMCPToolLookupName(serverName, toolName)] = definitionPath
+				}
+				if serverIdentifier != "" {
+					paths[forwarderCanonicalMCPToolLookupName(serverIdentifier, toolName)] = definitionPath
+				}
+			}
+		}
+	}
+
+	addDescriptors(requestContext.GetMcpFileSystemOptions().GetMcpDescriptors())
+	addDescriptors(requestContext.GetMcpMetaToolOptions().GetMcpDescriptors())
+	if len(paths) == 0 {
+		return nil
+	}
+	return paths
+}
+
 func escapeSkillPromptXML(value string) string {
 	replacer := strings.NewReplacer(
 		"&", "&amp;",

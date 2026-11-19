@@ -42,6 +42,7 @@ type ConversationFile struct {
 	CurrentPlans                    map[string]*agentv1.PlanRegistryEntry `json:"current_plans,omitempty"`
 	CurrentTodos                    []*agentv1.TodoItem                   `json:"current_todos,omitempty"`
 	MCPToolServers                  map[string]string                     `json:"mcp_tool_servers,omitempty"`
+	MCPToolDefinitionPaths          map[string]string                     `json:"mcp_tool_definition_paths,omitempty"`
 	ImportedTurnIDs                 [][]byte                              `json:"imported_turn_ids,omitempty"`
 	LatestRequestPrefix             *ConversationRequestPrefix            `json:"latest_request_prefix,omitempty"`
 	LastProviderCall                *ConversationProviderCall             `json:"last_provider_call,omitempty"`
@@ -196,6 +197,7 @@ type ActiveStream struct {
 	CompletedToolCallIDs        map[string]time.Time
 	PatchEditQueues             map[string][]queuedPatchEditOperation
 	MCPToolServers              map[string]string
+	MCPToolDefinitionPaths      map[string]string
 	WorkspacePaths              []string
 	TerminalsFolder             string
 	RequestFileContents         map[string]string

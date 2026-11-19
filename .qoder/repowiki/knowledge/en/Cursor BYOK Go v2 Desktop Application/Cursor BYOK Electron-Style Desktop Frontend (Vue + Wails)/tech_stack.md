@@ -1,0 +1,1 @@
+Vue 3.5 + Vue Router 4 (hash history), Vite 7 with `@vitejs/plugin-vue` and JSX support, Tailwind CSS 3 + PostCSS, Chart.js 4 via vue-chartjs, Wails v3 runtime (`@wailsio/runtime`) for cross-process IPC, Babel parser/traverse + MagicString for the custom i18n build plugin, dayjs for date formatting, sortablejs for drag ordering.

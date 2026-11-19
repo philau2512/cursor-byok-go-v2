@@ -1,0 +1,6 @@
+- Backend calls are centralized in `services/clientApi.js`, which wraps each `@bindings/...` function in a `withApiLogging(name, payload, runner)` helper that logs success/error and rethrows errors.
+- Raw payloads from the backend are normalized through dedicated `normalize*` helpers (e.g. `normalizeModelAdapter`, `normalizeModelAdapters`, `normalizeConfig`, `normalizeProxyState`) before being assigned to the reactive `appState` store.
+- User-facing strings are extracted at build time by the static i18n plugin: Chinese literals in `.vue` templates and `<script setup>` blocks are rewritten to call `$ls(...)` / `__i18nLocalized(...)` helpers, with translations stored in `src/i18n/locales/<locale>.json`.
+- Cross-process events are subscribed to via `Events.On(<EVENT_NAME>, handler)` inside `watchSyncEffect` blocks in `appState.js`, with cleanup returned via `onCleanup(unsubscribe)`.
+- Reactive state is persisted to `localStorage` under a single storage key (`APP_STATE_STORAGE_KEY`) via a `watchSyncEffect` that serializes a subset of `appState` fields on every change.
+- Component composition follows a two-tier pattern: low-level primitives live in `components/ui/` and higher-level domain widgets in `components/*.vue` compose them rather than importing each other directly.

@@ -1,0 +1,1 @@
+Loads and assembles per-mode static prompt templates, tool catalogs, and system reminders via Go's embed.FS, with a simple placeholder-based template renderer.

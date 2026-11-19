@@ -1,0 +1,95 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: enhance/optimize-stable-go-byok-v2
+nodes_managed: true
+exported_at: "2026-11-19T20:27:04Z"
+modules:
+    "":
+        dir_name: Cursor BYOK Go v2 Desktop Application
+        title: Cursor BYOK Go v2 Desktop Application
+        scope:
+            - README.md
+            - README-CN.md
+            - CONTRIBUTING.md
+            - CONTRIBUTING_EN.md
+            - release-notes.md
+            - .gitignore
+            - .dockerignore
+            - go.mod
+            - go.sum
+            - Taskfile.yml
+            - build.bat
+            - build.ps1
+            - main.go
+            - CHANGELOG.md
+            - LICENSE
+            - cursor.exe
+        source_files: []
+        children:
+            - cursor_proxy_debugger
+            - cursor_tab_server
+            - frontend
+            - prompts
+            - proto_and_generated
+            - scripts_and_tools
+        depends_on: []
+        related_to: []
+    cursor_proxy_debugger:
+        dir_name: Cursor Protocol HTTPS Debugging Proxy
+        title: Cursor Protocol HTTPS Debugging Proxy
+        scope:
+            - cursor-proxy-debugger/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: proto_and_generated
+    cursor_tab_server:
+        dir_name: Cursor Tab Proxy Server
+        title: Cursor Tab Proxy Server
+        scope:
+            - cursor-tab-server/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend:
+        dir_name: Cursor BYOK Electron-Style Desktop Frontend (Vue + Wails)
+        title: Cursor BYOK Electron-Style Desktop Frontend (Vue + Wails)
+        scope:
+            - frontend/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    prompts:
+        dir_name: Mode-Scoped Prompt & Tool Asset Loader
+        title: Mode-Scoped Prompt & Tool Asset Loader
+        scope:
+            - prompt/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    proto_and_generated:
+        dir_name: Protocol Buffer Schema Extraction & Snapshot Sync
+        title: Protocol Buffer Schema Extraction & Snapshot Sync
+        scope:
+            - proto/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: cursor_proxy_debugger
+    scripts_and_tools:
+        dir_name: Developer Scripts, Release Tooling & Agent Skills
+        title: Developer Scripts, Release Tooling & Agent Skills
+        scope:
+            - scripts/
+            - .agents/
+            - .github/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

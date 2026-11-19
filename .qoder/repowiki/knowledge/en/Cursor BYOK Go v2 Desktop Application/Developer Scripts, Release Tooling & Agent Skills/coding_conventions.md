@@ -1,0 +1,3 @@
+- Each Go script is a single-package `main` program whose entry point dispatches on `os.Args[1]` to subcommands, with each subcommand parsing its own flags via `flag.NewFlagSet(..., flag.ExitOnError)`.
+- Error handling in Go scripts funnels through a local `exitf` helper that writes to stderr and calls `os.Exit(1)`, keeping all failures uniform.
+- Release asset metadata is declared as a slice of typed structs (`releaseAssets []assetSpec`) rather than hard-coded loops, so adding platforms means extending the list.

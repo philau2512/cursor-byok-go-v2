@@ -1,0 +1,1 @@
+Requires a `config.yaml` next to the binary containing a `token:` field (an access token extracted from Cursor's local SQLite `state.vscdb` per the README). Default listen address is `:8041`; the Docker image exposes port 8041 and expects `config.yaml` mounted or copied into `/app/config.yaml`.

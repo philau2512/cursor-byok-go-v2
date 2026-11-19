@@ -1,0 +1,1 @@
+Run `./proto/extract_extensions_proto.sh [input-js-or-dir] [output-dir]` against a Cursor installation (default target `/Applications/Cursor.app/Contents/Resources/app/extensions/cursor-always-local/dist/main.js`). Run `./proto/check_proto_sync.sh` to assert that the root `.proto` files match the extracted copies.

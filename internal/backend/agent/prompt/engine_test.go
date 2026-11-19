@@ -276,8 +276,8 @@ func TestHydrateLocalMCPDescriptorsFullDescription(t *testing.T) {
 	if !strings.Contains(prompt, "<description>Inspects uncommitted Git changes (status and diff) with structured summaries.</description>") {
 		t.Fatal("compiled prompt missing hydrated full description for InspectChanges")
 	}
-	if strings.Contains(prompt, "<input_schema>") {
-		t.Fatal("compiled prompt should not contain inline input_schema (should be lazy loaded via definition_path)")
+	if !strings.Contains(prompt, `<input_schema>{&quot;properties&quot;:{&quot;path&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;path&quot;],&quot;type&quot;:&quot;object&quot;}</input_schema>`) {
+		t.Fatal("compiled prompt should inline compact input_schema with required params")
 	}
 	if !strings.Contains(prompt, `<mcp_tool name="fast_context_search">`) {
 		t.Fatal("compiled prompt missing fast_context_search tool")
@@ -287,7 +287,7 @@ func TestHydrateLocalMCPDescriptorsFullDescription(t *testing.T) {
 	}
 }
 
-func TestHydrateLocalMCPDescriptorsLazyLoadPreservesDescription(t *testing.T) {
+func TestHydrateLocalMCPDescriptorsPreservesDescriptionAndInlinesSchema(t *testing.T) {
 	tempDir := t.TempDir()
 	toolDefPath := filepath.Join(tempDir, "query.json")
 	toolJSON := `{
@@ -340,8 +340,8 @@ func TestHydrateLocalMCPDescriptorsLazyLoadPreservesDescription(t *testing.T) {
 	if !strings.Contains(prompt, "<description>Pre-existing client description</description>") {
 		t.Fatal("compiled prompt should preserve pre-existing client description")
 	}
-	if strings.Contains(prompt, "<input_schema>") {
-		t.Fatal("compiled prompt should not contain inline input_schema for lazy loaded tools")
+	if !strings.Contains(prompt, `<input_schema>{&quot;properties&quot;:{&quot;sql&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}</input_schema>`) {
+		t.Fatal("compiled prompt should hydrate compact input_schema from definition file even when client already provided description")
 	}
 }
 

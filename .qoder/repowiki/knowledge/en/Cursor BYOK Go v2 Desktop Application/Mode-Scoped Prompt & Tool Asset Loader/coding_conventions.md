@@ -1,0 +1,4 @@
+- Every exported accessor comes in two forms: a `ReadXxx(mode)` returning `(value, error)` and a `MustReadXxx(mode)` that panics on error, giving callers a choice between explicit error handling and fatal initialization.
+- Static assets are addressed through path constants built from the `Mode` string (e.g. `fmt.Sprintf("%s/prompt.md", normalized)`) rather than hard-coded literals scattered across callers.
+- Per-mode configuration is kept as plain JSON files under `modes/` referencing tool names from the central `tools.json`, with variant overrides expressed as `<tool>.<variant>` keys resolved in priority order (explicit variant → mode variant → canonical).
+- Package-level caches (`cachedPrompts`, `cachedTools`, `cachedDebugInitialReminder`, etc.) are populated once in `init()` and served directly on subsequent reads to avoid repeated I/O.

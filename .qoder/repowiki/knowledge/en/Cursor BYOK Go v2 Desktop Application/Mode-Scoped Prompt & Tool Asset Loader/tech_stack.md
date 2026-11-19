@@ -1,0 +1,1 @@
+Go `embed.FS` for bundling .md/.txt/.json assets at compile time; JSON schema-driven tool catalog with variant resolution.

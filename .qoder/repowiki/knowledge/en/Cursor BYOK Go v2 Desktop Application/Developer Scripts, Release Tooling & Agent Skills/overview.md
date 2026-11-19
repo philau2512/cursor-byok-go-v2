@@ -1,0 +1,1 @@
+Auxiliary tooling for the project: a Cursor client-side prompt-optimizer patch, a usage-metrics CLI, a release manifest generator, and agent skill definitions plus a PR template.

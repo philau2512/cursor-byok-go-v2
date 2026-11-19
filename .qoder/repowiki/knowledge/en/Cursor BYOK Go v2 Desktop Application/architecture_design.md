@@ -1,0 +1,9 @@
+The root `main.go` is the single entry point: it initializes logging, then calls `app.Run` with resources embedded via `//go:embed` (`frontend/dist`, `build/appicon.png`, `build/tray.png`). The Go module `cursor` (Go 1.25) owns the Wails-based desktop app and its internal packages; sibling directories are separate Go modules or tooling:
+- `frontend/` — Vue 3 + Vite + Wails UI, built into `frontend/dist` and embedded at compile time.
+- `cursor_tab_server/` — standalone Go HTTP proxy for gRPC-Web tab completion, built and published as a Docker image via `task cursor-tab-server:docker:amd64`.
+- `cursor_proxy_debugger/` — standalone HTTPS MITM proxy for Cursor BidiAppend/RunSSE/Fork Chat traffic, launched via `task proxy-debugger`.
+- `proto_and_generated/` — protobuf schema extraction pipeline keeping `.proto` snapshots in sync with Cursor's bundled JS extensions.
+- `prompts/` — static prompt/tool catalogs loaded through Go `embed.FS`.
+- `scripts_and_tools/` — CLI helpers for release manifest generation, versioning, usage metrics, and agent skills.
+
+Cross-child orchestration is driven by `Taskfile.yml`, which includes per-OS sub-taskfiles (`build/windows`, `build/darwin`, `build/linux`) plus a shared `build/Taskfile.yml`. It coordinates frontend asset building, multi-arch binary packaging (macOS arm64/amd64, Windows 386/amd64, Linux amd64), release note generation from `release-notes.md`, update manifest creation, and GitHub Releases publishing via `gh` API. The `ads-page/` directory is an independent Yarn project for the ad landing page, built separately and consumed by the main app.

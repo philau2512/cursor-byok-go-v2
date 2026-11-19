@@ -999,11 +999,15 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	}
 	updateStreamRequestContextData(stream, intent.RequestContext)
 	hydrateStreamMCPToolServers(stream, conversation.MCPToolServers)
+	hydrateStreamMCPToolDefinitionPaths(stream, conversation.MCPToolDefinitionPaths)
 	service.updateStreamMCPToolServers(stream, intent.RequestContext)
+	service.updateStreamMCPToolDefinitionPaths(stream, intent.RequestContext)
 	streamMCPToolServers := snapshotStreamMCPToolServers(stream)
+	streamMCPToolDefinitionPaths := snapshotStreamMCPToolDefinitionPaths(stream)
 	if _, err := service.store.UpdateConversationMeta(intent.ConversationID, func(conversation *ConversationFile) error {
 		if conversation != nil {
 			conversation.MCPToolServers = streamMCPToolServers
+			conversation.MCPToolDefinitionPaths = streamMCPToolDefinitionPaths
 		}
 		return nil
 	}); err != nil {
@@ -1277,6 +1281,9 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 	result, err := service.execBridge.ApplyExecClientMessage(intent.ExecClientMessage, pending)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(pending.ExecKind) == "mcp" && strings.TrimSpace(result.ToolResultPayload) != "" {
+		result.ToolResultPayload = service.enrichMCPParameterError(stream, pending, result.ToolResultPayload)
 	}
 	if result.ShellOutputDelta != nil {
 		if err := service.broker.Publish(intent.RequestID, StreamEvent{
@@ -4031,6 +4038,36 @@ func hydrateStreamMCPToolServers(stream *ActiveStream, servers map[string]string
 	}
 	stream.mu.Lock()
 	stream.MCPToolServers = cloneStringMap(servers)
+	stream.UpdatedAt = time.Now().UTC()
+	stream.mu.Unlock()
+}
+
+func (service *Service) updateStreamMCPToolDefinitionPaths(stream *ActiveStream, requestContext *agentv1.RequestContext) {
+	if stream == nil || !hasMCPDescriptorSnapshot(requestContext) {
+		return
+	}
+	paths := collectMCPToolDefinitionPaths(requestContext)
+	stream.mu.Lock()
+	stream.MCPToolDefinitionPaths = cloneStringMap(paths)
+	stream.UpdatedAt = time.Now().UTC()
+	stream.mu.Unlock()
+}
+
+func snapshotStreamMCPToolDefinitionPaths(stream *ActiveStream) map[string]string {
+	if stream == nil {
+		return nil
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return cloneStringMap(stream.MCPToolDefinitionPaths)
+}
+
+func hydrateStreamMCPToolDefinitionPaths(stream *ActiveStream, paths map[string]string) {
+	if stream == nil {
+		return
+	}
+	stream.mu.Lock()
+	stream.MCPToolDefinitionPaths = cloneStringMap(paths)
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
 }

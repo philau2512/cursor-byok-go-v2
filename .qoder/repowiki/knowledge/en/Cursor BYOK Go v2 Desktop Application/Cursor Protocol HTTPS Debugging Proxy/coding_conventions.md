@@ -1,0 +1,5 @@
+- Path-to-protobuf-message routing is centralized in switch functions (`unaryRequestMessage`, `unaryResponseMessage`, `newMessage`) keyed by path constants defined at the top of decode.go.
+- Configuration values are normalized through a `normalized()` method on `Config` that fills defaults from package-level `default*` constants.
+- Capture callbacks follow a paired pattern: a chunk callback forwards bytes to an optional frame decoder, and a completion callback finalizes size/truncation/error state via `finishRequestBody`/`finishResponseBody`.
+- Sensitive HTTP headers (`Authorization`, `Cookie`, `Set-Cookie`, `Proxy-Authorization`, `X-Api-Key`) are masked with `[已隐藏]` during header serialization rather than stripped.
+- UI responses go through a shared `writeJSON` helper that sets `application/json; charset=utf-8` and encodes via `json.Encoder`, keeping response formatting uniform across handlers.

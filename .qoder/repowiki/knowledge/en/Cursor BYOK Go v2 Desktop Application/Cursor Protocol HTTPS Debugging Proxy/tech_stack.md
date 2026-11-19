@@ -1,0 +1,1 @@
+Go with `github.com/elazarl/goproxy` for MITM proxying, `google.golang.org/protobuf` + `protojson` for decoding Cursor's generated `aiserverv1` / `agentv1` messages, and `compress/gzip` for Connect frame decompression. Frontend is vanilla JS/CSS/HTML served via `embed.FS` with i18n support.

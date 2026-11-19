@@ -1,0 +1,3 @@
+- Generated `.proto` messages carry a `// Copied from: <package>.<Type> (var: <short>)` comment above each definition, preserving the original JS variable name as provenance.
+- Each `.proto` file declares `syntax = "proto3"`, a package matching the source namespace (e.g. `agent.v1`), and an `option go_package = "cursor/gen/<pkg>;<pkg>"` pointing into the repository's generated Go tree.
+- The extraction pipeline enforces strictness: unresolved type references, skipped fields, placeholder field lines, and missing required shapes (e.g. `ExecClientControlMessage.stream_close`, `ShellStream.stdout`) cause the extractor to exit non-zero.
