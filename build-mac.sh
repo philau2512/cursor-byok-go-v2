@@ -14,14 +14,16 @@ cd "$(dirname "$0")"
 # Ensure Go user bin dir is on PATH (wails3 etc. installed via `go install`).
 export PATH="$HOME/go/bin:$PATH"
 
-for cmd in go task wails3 yarn protoc; do
+for cmd in go task wails3 yarn protoc protoc-gen-go protoc-gen-connect-go; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     case "$cmd" in
-      wails3)  hint="go install github.com/wailsapp/wails/v3/cmd/wails3@latest" ;;
-      task)    hint="brew install go-task" ;;
-      yarn)    hint="corepack enable || npm i -g yarn" ;;
-      protoc)  hint="brew install protobuf" ;;
-      *)       hint="brew install go" ;;
+      wails3)                hint="go install github.com/wailsapp/wails/v3/cmd/wails3@latest" ;;
+      task)                  hint="brew install go-task" ;;
+      yarn)                  hint="corepack enable || npm i -g yarn" ;;
+      protoc)                hint="brew install protobuf" ;;
+      protoc-gen-go)         hint="go install google.golang.org/protobuf/cmd/protoc-gen-go@latest" ;;
+      protoc-gen-connect-go) hint="go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest" ;;
+      *)                     hint="brew install go" ;;
     esac
     echo "ERROR: '$cmd' not found in PATH. Install it first: $hint" >&2
     exit 1
