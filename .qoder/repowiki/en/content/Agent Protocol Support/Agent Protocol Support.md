@@ -17,6 +17,9 @@
 - [local_discovery.go](file://internal/backend/agent/prompt/local_discovery.go)
 - [request_context.go](file://internal/backend/forwarder/request_context.go)
 - [commit_message.go](file://internal/backend/forwarder/commit_message.go)
+- [commit_message_manifest_test.go](file://internal/backend/forwarder/commit_message_manifest_test.go)
+- [commit_message_model_test.go](file://internal/backend/forwarder/commit_message_model_test.go)
+- [prompt_optimizer.go](file://internal/backend/forwarder/prompt_optimizer.go)
 - [engine_test.go](file://internal/backend/agent/prompt/engine_test.go)
 </cite>
 
@@ -26,6 +29,9 @@
 - Added advanced multi-tier model selection system for commit message generation in forwarder service
 - Updated skill detection logic to prevent Cursor built-in commands from hijacking ak-* skills
 - Implemented sophisticated model resolution chain with live explorer overrides and persistent fallbacks
+- **NEW**: Enhanced commit message generation with adaptive token budgeting (512 base + 40 per file, max 1536)
+- **NEW**: File change summarization system that tracks additions/deletions across diffs
+- **NEW**: Improved model selection chain integration for better commit message accuracy
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,11 +41,12 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Enhanced Slash Command Processing](#enhanced-slash-command-processing)
 7. [Advanced Multi-Tier Model Selection](#advanced-multi-tier-model-selection)
-8. [Enhanced MCP Integration](#enhanced-mcp-integration)
-9. [Dependency Analysis](#dependency-analysis)
-10. [Performance Considerations](#performance-considerations)
-11. [Troubleshooting Guide](#troubleshooting-guide)
-12. [Conclusion](#conclusion)
+8. [Enhanced Commit Message Generation](#enhanced-commit-message-generation)
+9. [Enhanced MCP Integration](#enhanced-mcp-integration)
+10. [Dependency Analysis](#dependency-analysis)
+11. [Performance Considerations](#performance-considerations)
+12. [Troubleshooting Guide](#troubleshooting-guide)
+13. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains how cursor-byok implements Cursor's Agent protocol so that a local service can act as Cursor's backend while routing model requests to upstream OpenAI- or Anthropic-compatible providers. The implementation preserves Cursor Agent capabilities including:
@@ -49,6 +56,7 @@ This document explains how cursor-byok implements Cursor's Agent protocol so tha
 - MCP (Model Context Protocol) descriptors and file-system-based MCP servers
 - Multi-turn conversation state, plans, todos, summaries, and checkpoints
 - Streaming responses with heartbeats, cancellation, and terminal error propagation
+- Enhanced commit message generation with adaptive token budgeting and file change analysis
 
 At a high level, Cursor sends binary Agent messages over a bidirectional channel. The local service decodes them into `AgentClientMessage`, maps them to internal intents, compiles prompts with tools and context, forwards streaming requests to the selected provider, executes tools through bridges, and publishes structured `AgentServerMessage` events back to the client.
 
@@ -70,6 +78,7 @@ The Agent protocol support spans several layers:
 | Prompt engine | Mode-specific system prompts, tools, skills, MCP, request context assembly | [engine.go](file://internal/backend/agent/prompt/engine.go) |
 | Runtime core | Command kinds, run states, pending exec/interaction, supported tools | [core_types.go](file://internal/backend/agent/core/types.go) |
 | HTTP/connect routing | Route registration, middleware chain, Connect stream/unary handling | [route.go](file://internal/backend/server/route.go) |
+| Commit message generation | Adaptive token budgeting, file change summarization, model selection chain | [commit_message.go](file://internal/backend/forwarder/commit_message.go) |
 
 ```mermaid
 graph TB
@@ -532,7 +541,7 @@ NextCandidate --> CheckConfig
 ```
 
 **Diagram sources**
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:269-303](file://internal/backend/forwarder/commit_message.go#L269-L303)
 - [service.go:2010-2022](file://internal/backend/forwarder/service.go#L2010-L2022)
 - [service.go:2055-2064](file://internal/backend/forwarder/service.go#L2055-L2064)
 
@@ -548,10 +557,103 @@ The system includes sophisticated management of explorer model overrides:
 **Error Handling**: The system gracefully handles missing or invalid overrides, falling back to previous candidates or default behavior without breaking the overall workflow.
 
 **Section sources**
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:269-303](file://internal/backend/forwarder/commit_message.go#L269-L303)
 - [service.go:2010-2022](file://internal/backend/forwarder/service.go#L2010-L2022)
 - [service.go:2025-2053](file://internal/backend/forwarder/service.go#L2025-L2053)
 - [service.go:2055-2064](file://internal/backend/forwarder/service.go#L2055-L2064)
+
+## Enhanced Commit Message Generation
+
+### Adaptive Token Budgeting System
+The enhanced commit message generation introduces sophisticated adaptive token budgeting that dynamically adjusts output limits based on the complexity of file changes:
+
+**Budget Calculation Formula**: The system uses a linear formula with configurable parameters:
+- Base budget: 512 tokens (minimum for simple commits)
+- Per-file allocation: 40 tokens per changed file
+- Maximum cap: 1,536 tokens (hard limit to prevent excessive output)
+
+**Adaptive Scaling**: The budget scales proportionally with the number of changed files, ensuring adequate space for detailed commit messages while preventing resource exhaustion:
+
+```go
+budget := 512 + (changedFileCount * 40)
+if budget > 1536 {
+    return 1536
+}
+return budget
+```
+
+**Edge Case Handling**: The system handles negative file counts by falling back to the base budget, ensuring robust operation even with malformed input.
+
+```mermaid
+flowchart TD
+Input["Changed File Count"] --> Validate{"Count >= 0?"}
+Validate --> |No| UseBase["Use Base Budget (512)"]
+Validate --> |Yes| Calculate["Calculate: 512 + (count × 40)"]
+Calculate --> CapCheck{"Budget > 1536?"}
+CapCheck --> |Yes| UseMax["Use Max Budget (1536)"]
+CapCheck --> |No| UseCalculated["Use Calculated Budget"]
+UseBase --> Output["Final Budget"]
+UseMax --> Output
+UseCalculated --> Output
+```
+
+**Diagram sources**
+- [commit_message.go:158-169](file://internal/backend/forwarder/commit_message.go#L158-L169)
+- [commit_message_manifest_test.go:77-90](file://internal/backend/forwarder/commit_message_manifest_test.go#L77-L90)
+
+### File Change Summarization System
+The file change summarization system provides comprehensive analysis of git diffs to generate accurate commit contexts:
+
+**Multi-Diff Aggregation**: The system scans through all provided diffs (including those that may be truncated later) to build a complete picture of file changes:
+
+- **Header Parsing**: Extracts file paths from `diff --git` headers
+- **Change Tracking**: Counts additions (+) and deletions (-) per file
+- **Duplicate Handling**: Merges changes for the same file across multiple diff blocks
+- **Order Preservation**: Maintains first-seen ordering for consistent output
+
+**Manifest Generation**: Creates a structured manifest showing all changed files with their addition/deletion counts:
+
+```
+Files changed (N):
+- path/to/file.ts (+additions/-deletions)
+- another/file.js (+additions/-deletions)
+- ... and X more files
+```
+
+**Scope Preservation**: Even when diffs are truncated due to size limits, the manifest ensures models understand the full scope of changes, preventing hallucinated domain knowledge.
+
+```mermaid
+flowchart TD
+Diffs["Git Diffs"] --> ParseHeaders["Parse diff --git Headers"]
+ParseHeaders --> TrackChanges["Track +/- Lines"]
+TrackChanges --> AggregateFiles["Aggregate by File Path"]
+AggregateFiles --> CreateManifest["Create File Manifest"]
+CreateManifest --> IncludeInPrompt["Include in Model Prompt"]
+```
+
+**Diagram sources**
+- [commit_message.go:177-208](file://internal/backend/forwarder/commit_message.go#L177-L208)
+- [commit_message.go:230-249](file://internal/backend/forwarder/commit_message.go#L230-L249)
+
+### Enhanced Prompt Construction
+The prompt construction process now includes multiple contextual sections to improve commit message quality:
+
+**System Context**: Loads predefined system prompts that guide the model toward generating high-quality commit messages.
+
+**Previous Commits**: Includes up to 12 recent commit messages to maintain consistency with existing codebase patterns.
+
+**Explicit Context**: Supports additional context provided by the caller through structured JSON objects.
+
+**File Manifest**: Shows all changed files with their change statistics, providing scope awareness even when diffs are truncated.
+
+**Actual Diffs**: Includes the processed diff content with proper formatting and numbering.
+
+**Section sources**
+- [commit_message.go:123-156](file://internal/backend/forwarder/commit_message.go#L123-L156)
+- [commit_message.go:158-169](file://internal/backend/forwarder/commit_message.go#L158-L169)
+- [commit_message.go:177-249](file://internal/backend/forwarder/commit_message.go#L177-L249)
+- [commit_message_manifest_test.go:10-43](file://internal/backend/forwarder/commit_message_manifest_test.go#L10-L43)
+- [commit_message_manifest_test.go:92-122](file://internal/backend/forwarder/commit_message_manifest_test.go#L92-L122)
 
 ## Enhanced MCP Integration
 
@@ -646,6 +748,7 @@ MCPSchemaHeal --> CoreMCP["core/mcp.go"]
 PromptEngine --> LocalDiscovery["prompt/local_discovery.go"]
 ForwarderService --> RequestContext["forwarder/request_context.go"]
 ForwarderService --> CommitMessage["forwarder/commit_message.go"]
+CommitMessage --> PromptOptimizer["prompt_optimizer.go"]
 ```
 
 **Diagram sources**
@@ -662,7 +765,8 @@ ForwarderService --> CommitMessage["forwarder/commit_message.go"]
 - [mcp.go:1-111](file://internal/backend/agent/core/mcp.go#L1-L111)
 - [local_discovery.go:650-805](file://internal/backend/agent/prompt/local_discovery.go#L650-L805)
 - [request_context.go:379-427](file://internal/backend/forwarder/request_context.go#L379-L427)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:1-479](file://internal/backend/forwarder/commit_message.go#L1-L479)
+- [prompt_optimizer.go:60-80](file://internal/backend/forwarder/prompt_optimizer.go#L60-L80)
 
 **Section sources**
 - [inbound.go:38-96](file://internal/backend/agent/protocol/inbound.go#L38-L96)
@@ -691,6 +795,9 @@ Several mechanisms in the codebase are designed to keep streaming responsive and
 | Path resolution optimization | Multi-key lookup with canonical name support | Improves tool definition path resolution performance. |
 | Skill hijacking prevention | Exact name matching and built-in command protection | Prevents accidental skill loading and reduces unnecessary processing. |
 | Multi-tier model selection | Prioritized candidate evaluation with strict/flexible resolution | Optimizes model resolution performance while maintaining accuracy. |
+| **Adaptive token budgeting** | Dynamic output limits based on file change complexity | Ensures adequate commit message length while preventing excessive token usage. |
+| **File change summarization** | Efficient diff parsing and aggregation | Provides accurate change context without processing full diff content. |
+| **Manifest optimization** | Limited manifest size with omission indicators | Balances scope visibility with prompt size constraints. |
 
 Streaming performance depends heavily on:
 
@@ -701,6 +808,8 @@ Streaming performance depends heavily on:
 - How effectively the MCP schema healing reduces retry loops through better parameter guidance.
 - How efficiently the skill hijacking prevention avoids unnecessary skill loading.
 - How effectively the multi-tier model selection minimizes resolution attempts.
+- **How efficiently the adaptive token budgeting balances commit message quality with resource constraints.**
+- **How effectively the file change summarization provides accurate context without excessive processing overhead.**
 
 Concurrent tool execution is coordinated through pending execution and interaction state. Long-running tools such as shell streams should use background shell handling and await semantics to avoid blocking the main streaming loop.
 
@@ -715,7 +824,8 @@ Concurrent tool execution is coordinated through pending execution and interacti
 - [mcp_schema_heal.go:104-144](file://internal/backend/forwarder/mcp_schema_heal.go#L104-L144)
 - [local_discovery.go:650-723](file://internal/backend/agent/prompt/local_discovery.go#L650-L723)
 - [engine.go:553-608](file://internal/backend/agent/prompt/engine.go#L553-L608)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:158-169](file://internal/backend/forwarder/commit_message.go#L158-L169)
+- [commit_message.go:177-249](file://internal/backend/forwarder/commit_message.go#L177-L249)
 
 ## Troubleshooting Guide
 Common issues and their likely locations:
@@ -736,8 +846,11 @@ Common issues and their likely locations:
 | MCP schema not found | Definition path resolution failed or file missing. | [mcp_schema_heal.go:64-102](file://internal/backend/forwarder/mcp_schema_heal.go#L64-L102), [local_discovery.go:659-697](file://internal/backend/agent/prompt/local_discovery.go#L659-L697) |
 | Excessive MCP schema size | Schema exceeds budget limits, triggering lazy loading. | [local_discovery.go:650-723](file://internal/backend/agent/prompt/local_discovery.go#L650-L723) |
 | Skill hijacking detected | Similar-named built-in command triggered custom skill. | [engine.go:553-608](file://internal/backend/agent/prompt/engine.go#L553-L608), [engine_test.go:651-690](file://internal/backend/agent/prompt/engine_test.go#L651-L690) |
-| Commit message uses wrong model | Model resolution chain failed or overrides not properly configured. | [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201), [service.go:2010-2022](file://internal/backend/forwarder/service.go#L2010-L2022) |
+| Commit message uses wrong model | Model resolution chain failed or overrides not properly configured. | [commit_message.go:269-303](file://internal/backend/forwarder/commit_message.go#L269-L303), [service.go:2010-2022](file://internal/backend/forwarder/service.go#L2010-L2022) |
 | Explorer model override not persisting | Subagent override capture failed or storage issue. | [service.go:2025-2053](file://internal/backend/forwarder/service.go#L2025-L2053) |
+| **Commit message truncated** | Adaptive token budget insufficient for complex changes. | [commit_message.go:158-169](file://internal/backend/forwarder/commit_message.go#L158-L169) |
+| **Missing file context in commit** | File change summarization failed or manifest generation error. | [commit_message.go:177-208](file://internal/backend/forwarder/commit_message.go#L177-L208), [commit_message.go:230-249](file://internal/backend/forwarder/commit_message.go#L230-L249) |
+| **Incorrect budget calculation** | Negative file count or budget overflow not handled properly. | [commit_message.go:160-168](file://internal/backend/forwarder/commit_message.go#L160-L168), [commit_message_manifest_test.go:77-90](file://internal/backend/forwarder/commit_message_manifest_test.go#L77-L90) |
 
 Debug logging is present throughout the forwarder and broker layers. When diagnosing Agent protocol problems, inspect:
 
@@ -750,6 +863,8 @@ Debug logging is present throughout the forwarder and broker layers. When diagno
 - Tool definition path resolution results.
 - Skill hijacking prevention logs.
 - Multi-tier model selection candidate evaluation.
+- **Commit message generation logs including budget calculations and file change summaries.**
+- **Token budget allocation decisions and adaptive scaling behavior.**
 
 **Section sources**
 - [service.go:370-448](file://internal/backend/forwarder/service.go#L370-L448)
@@ -765,8 +880,10 @@ Debug logging is present throughout the forwarder and broker layers. When diagno
 - [local_discovery.go:659-723](file://internal/backend/agent/prompt/local_discovery.go#L659-L723)
 - [engine.go:553-608](file://internal/backend/agent/prompt/engine.go#L553-L608)
 - [engine_test.go:651-690](file://internal/backend/agent/prompt/engine_test.go#L651-L690)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:269-303](file://internal/backend/forwarder/commit_message.go#L269-L303)
 - [service.go:2010-2053](file://internal/backend/forwarder/service.go#L2010-L2053)
+- [commit_message.go:158-249](file://internal/backend/forwarder/commit_message.go#L158-L249)
+- [commit_message_manifest_test.go:77-122](file://internal/backend/forwarder/commit_message_manifest_test.go#L77-L122)
 
 ## Conclusion
 cursor-byok's Agent protocol implementation provides a robust bridge between Cursor's native Agent wire format and upstream model providers. It preserves Cursor's tool calling, Skills, MCP, and multi-turn conversation semantics by:
@@ -783,6 +900,8 @@ The enhanced slash command processing significantly improves reliability through
 
 The advanced multi-tier model selection system provides sophisticated model resolution for commit message generation and other secondary tasks, offering a prioritized chain of candidates with both live and persistent fallbacks, ensuring consistent model selection across different parts of the system.
 
+**The enhanced commit message generation system represents a significant advancement in automated commit message quality**, featuring adaptive token budgeting that scales intelligently with file change complexity, comprehensive file change summarization that tracks additions and deletions across multiple diffs, and sophisticated model selection chain integration that leverages live explorer overrides and persistent fallbacks for optimal accuracy.
+
 The enhanced MCP integration significantly improves reliability through intelligent schema discovery, automatic error recovery, and efficient path tracking. These improvements enable more robust tool execution with better parameter validation, reduced retry loops, and improved model guidance for complex MCP tool interactions.
 
-This architecture allows users to bring their own model APIs while keeping Cursor's full Agent experience intact, with enhanced MCP support, improved skill management, and sophisticated model selection providing better tool discovery, parameter validation, error recovery, and consistent model resolution capabilities.
+This architecture allows users to bring their own model APIs while keeping Cursor's full Agent experience intact, with enhanced MCP support, improved skill management, sophisticated model selection, and advanced commit message generation providing better tool discovery, parameter validation, error recovery, consistent model resolution, and high-quality automated commit messages.

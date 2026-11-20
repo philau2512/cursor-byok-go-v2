@@ -1,1 +1,0 @@
-Go 1.25 with Wails v3 alpha for the desktop shell; Vue 3 + Vite for the embedded frontend; Taskfile for cross-platform build orchestration; Docker for the tab server image; protobuf toolchain for schema extraction.

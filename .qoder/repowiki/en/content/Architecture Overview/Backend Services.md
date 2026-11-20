@@ -12,7 +12,18 @@
 - [response_writer.go](file://internal/backend/server/response_writer.go)
 - [local.go](file://internal/backend/server/local.go)
 - [manager.go](file://internal/backend/server/config/manager.go)
+- [commit_message.go](file://internal/backend/forwarder/commit_message.go)
+- [compaction.go](file://internal/backend/forwarder/compaction.go)
+- [token_estimator.go](file://internal/backend/forwarder/token_estimator.go)
+- [commit_message_manifest_test.go](file://internal/backend/forwarder/commit_message_manifest_test.go)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Enhanced forwarder component with adaptive token budget management for commit messages
+- Added comprehensive file change manifest generation for commit message prompts
+- Improved compaction summary generation with better token budget handling
+- Added extensive test coverage for commit message functionality including manifest generation and budget calculations
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -20,13 +31,14 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Forwarder Component Enhancements](#forwarder-component-enhancements)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the backend services architecture, focusing on HTTP server lifecycle management, route definitions, middleware stack, service registration, health checks, configuration management, and how the local backend serves both REST APIs and WebSocket/Connect streams to the frontend. It also documents how upstream model provider APIs are proxied and how the main application runner orchestrates modules.
+This document explains the backend services architecture, focusing on HTTP server lifecycle management, route definitions, middleware stack, service registration, health checks, configuration management, and how the local backend serves both REST APIs and WebSocket/Connect streams to the frontend. It also documents how upstream model provider APIs are proxied and how the main application runner orchestrates modules. The forwarder component has been enhanced with adaptive token budget management for commit messages, file change manifest generation, and improved compaction summary handling.
 
 ## Project Structure
 The backend is composed of:
@@ -35,6 +47,7 @@ The backend is composed of:
 - Backend Host that owns an http.Server, builds a router with routes and middleware, and manages lifecycle (start/stop).
 - Server framework providing routing, middleware composition, context, and response tracking.
 - Configuration manager for hot-reloadable settings used by routes and handlers.
+- Enhanced Forwarder component with adaptive token budget management and improved commit message generation.
 
 ```mermaid
 graph TB
@@ -46,6 +59,10 @@ Router --> Ctx["internal/backend/server/context.go"]
 Ctx --> URL["internal/backend/server/url.go"]
 Router --> RW["internal/backend/server/response_writer.go"]
 Host --> ConfigMgr["internal/backend/server/config/manager.go"]
+Host --> Forwarder["internal/backend/forwarder/*"]
+Forwarder --> CommitMsg["commit_message.go"]
+Forwarder --> Compaction["compaction.go"]
+Forwarder --> TokenEst["token_estimator.go"]
 ```
 
 **Diagram sources**
@@ -70,6 +87,7 @@ Host --> ConfigMgr["internal/backend/server/config/manager.go"]
 - Context and URL Utilities: Provide request-scoped context, upstream URL parsing, and validation.
 - Response Writer Tracking: Ensures headers are written once and supports streaming and hijacking.
 - Configuration Manager: Hot-reloads configuration from storage and notifies subscribers.
+- Enhanced Forwarder Component: Manages adaptive token budget allocation, commit message generation with file manifests, and improved compaction summaries.
 
 **Section sources**
 - [runner.go:119-470](file://internal/app/runner.go#L119-L470)
@@ -86,6 +104,7 @@ The backend exposes a local HTTP server that handles:
 - REST endpoints for auth, analytics, dashboard, and OAuth.
 - Connect unary/stream endpoints for agent workflows and repository operations.
 - A catch-all AI service handler that forwards requests to upstream model providers based on configuration.
+- Enhanced commit message generation with adaptive token budgeting and file change manifests.
 
 ```mermaid
 sequenceDiagram
@@ -93,12 +112,14 @@ participant FE as "Frontend"
 participant H as "Backend Host"
 participant R as "Router (chi)"
 participant M as "Middleware Chain"
+participant F as "Forwarder Component"
 participant A as "Local Handlers"
 participant U as "Upstream Provider API"
 FE->>H : HTTP Request
 H->>R : Dispatch
 R->>M : Apply global + route middlewares
-M->>A : Execute action
+M->>F : Forwarder processing (adaptive budget)
+F->>A : Execute action
 alt Local-only route
 A-->>FE : Response
 else Upstream-proxied route
@@ -370,12 +391,115 @@ R->>A : Refresh ad assets based on backend addr
 - [main.go:19-29](file://main.go#L19-L29)
 - [runner.go:119-470](file://internal/app/runner.go#L119-L470)
 
+## Forwarder Component Enhancements
+
+### Adaptive Token Budget Management for Commit Messages
+
+The forwarder component now includes sophisticated adaptive token budget management for commit message generation. This enhancement ensures optimal resource allocation based on the complexity of code changes.
+
+**Key Features:**
+- **Dynamic Budget Calculation**: The `commitMessageOutputBudget` function calculates output token budgets based on the number of changed files, scaling from a base of 512 tokens up to a maximum of 1,536 tokens.
+- **File Change Manifest Generation**: The system generates comprehensive file change manifests that provide context about modified files, including addition/deletion counts.
+- **Truncated Diff Handling**: Even when diffs are truncated due to budget constraints, the manifest ensures the model understands the full scope of changes.
+
+```mermaid
+flowchart TD
+Diffs["Input Diffs"] --> Summarize["summarizeCommitMessageFiles()"]
+Summarize --> Manifest["formatCommitMessageManifest()"]
+Manifest --> Prompt["buildCommitMessagePrompt()"]
+Prompt --> Budget["commitMessageOutputBudget()"]
+Budget --> ModelCall["Model API Call"]
+```
+
+**Diagram sources**
+- [commit_message.go:123-156](file://internal/backend/forwarder/commit_message.go#L123-L156)
+- [commit_message.go:158-169](file://internal/backend/forwarder/commit_message.go#L158-L169)
+- [commit_message.go:177-208](file://internal/backend/forwarder/commit_message.go#L177-L208)
+
+**Section sources**
+- [commit_message.go:123-169](file://internal/backend/forwarder/commit_message.go#L123-L169)
+- [commit_message.go:177-208](file://internal/backend/forwarder/commit_message.go#L177-L208)
+- [commit_message_manifest_test.go:77-90](file://internal/backend/forwarder/commit_message_manifest_test.go#L77-L90)
+
+### File Change Manifest Generation
+
+The enhanced commit message system includes sophisticated file change manifest generation that provides the model with comprehensive context about code modifications:
+
+- **File Scanning**: The `summarizeCommitMessageFiles` function scans diff headers to identify all modified files and count additions/deletions across entire diffs (before truncation).
+- **Manifest Formatting**: The `formatCommitMessageManifest` function creates human-readable manifests showing file changes with +/- counts and handling large file sets with omission indicators.
+- **Scope Preservation**: Even when individual diffs are truncated, the manifest preserves the complete scope of changes, preventing the model from making assumptions about unrepresented files.
+
+```mermaid
+sequenceDiagram
+participant Client as "Client Request"
+participant Parser as "summarizeCommitMessageFiles"
+participant Formatter as "formatCommitMessageManifest"
+participant Model as "LLM Provider"
+Client->>Parser : Raw diffs
+Parser->>Parser : Scan diff headers
+Parser->>Formatter : File change data
+Formatter->>Model : Formatted manifest
+Model->>Client : Generated commit message
+```
+
+**Diagram sources**
+- [commit_message.go:177-208](file://internal/backend/forwarder/commit_message.go#L177-L208)
+- [commit_message.go:230-249](file://internal/backend/forwarder/commit_message.go#L230-L249)
+
+**Section sources**
+- [commit_message.go:177-208](file://internal/backend/forwarder/commit_message.go#L177-L208)
+- [commit_message.go:230-249](file://internal/backend/forwarder/commit_message.go#L230-L249)
+- [commit_message_manifest_test.go:10-43](file://internal/backend/forwarder/commit_message_manifest_test.go#L10-L43)
+
+### Compaction Summary Improvements
+
+The compaction system has been enhanced with better token budget management and improved summary generation:
+
+- **Adaptive Reserve Tokens**: The system dynamically adjusts reserve token allocation based on model capabilities and conversation context.
+- **Enhanced Summary Generation**: The `generateCompactionSummary` function now includes better error handling and token usage tracking.
+- **Budget Validation**: Improved validation ensures compaction results stay within context budget constraints.
+- **Fallback Mechanisms**: Robust fallback mechanisms ensure compaction succeeds even when primary methods fail.
+
+```mermaid
+flowchart TD
+Conversation["Conversation State"] --> PlanBuilder["buildCompactionPlan()"]
+PlanBuilder --> BudgetCheck["validateCompactionCandidateBudget()"]
+BudgetCheck --> |Within Budget| SummaryGen["generateCompactionSummary()"]
+BudgetCheck --> |Over Budget| Fallback["buildFallbackCompactionSummary()"]
+SummaryGen --> Apply["applyCompactionToConversation()"]
+Fallback --> Apply
+Apply --> UpdatedState["Updated Conversation State"]
+```
+
+**Diagram sources**
+- [compaction.go:777-802](file://internal/backend/forwarder/compaction.go#L777-L802)
+- [compaction.go:1413-1501](file://internal/backend/forwarder/compaction.go#L1413-L1501)
+- [compaction.go:737-775](file://internal/backend/forwarder/compaction.go#L737-L775)
+
+**Section sources**
+- [compaction.go:777-802](file://internal/backend/forwarder/compaction.go#L777-L802)
+- [compaction.go:1413-1501](file://internal/backend/forwarder/compaction.go#L1413-L1501)
+- [compaction.go:737-775](file://internal/backend/forwarder/compaction.go#L737-L775)
+
+### Comprehensive Test Coverage
+
+The commit message functionality now includes extensive test coverage ensuring reliability and correctness:
+
+- **Budget Calculation Tests**: Verify adaptive budget scaling and clamping behavior.
+- **Manifest Generation Tests**: Ensure proper file change counting and formatting.
+- **Truncation Handling Tests**: Validate behavior when diffs exceed budget limits.
+- **Edge Case Coverage**: Test negative inputs, empty diffs, and malformed content.
+
+**Section sources**
+- [commit_message_manifest_test.go:77-123](file://internal/backend/forwarder/commit_message_manifest_test.go#L77-L123)
+
 ## Dependency Analysis
 - main.go depends on internal/app for orchestration.
 - internal/app/runner.go depends on internal/backend/host for HTTP server lifecycle and on various bridge services.
 - internal/backend/host.go composes server framework components and forwarder modules.
 - server framework (route.go, middleware.go, context.go, url.go, response_writer.go) is reused across all routes.
 - Configuration manager is consumed by host and handlers to provide runtime settings.
+- Enhanced forwarder component depends on token estimation utilities and prompt assets.
 
 ```mermaid
 graph LR
@@ -387,6 +511,10 @@ Router --> Ctx["internal/backend/server/context.go"]
 Ctx --> URL["internal/backend/server/url.go"]
 Router --> RW["internal/backend/server/response_writer.go"]
 Host --> ConfigMgr["internal/backend/server/config/manager.go"]
+Host --> Forwarder["internal/backend/forwarder/*"]
+Forwarder --> CommitMsg["commit_message.go"]
+Forwarder --> Compaction["compaction.go"]
+Forwarder --> TokenEst["token_estimator.go"]
 ```
 
 **Diagram sources**
@@ -410,6 +538,8 @@ Host --> ConfigMgr["internal/backend/server/config/manager.go"]
 - Streaming support: Tracked response writer supports Flush and Hijack for long-lived connections (Connect streams).
 - Middleware overhead: Global middlewares add parsing and error handling; ensure they remain lightweight.
 - Configuration hot reload: Debounced reloads prevent frequent disk I/O and notifications.
+- **Enhanced Forwarder Performance**: Adaptive token budgeting reduces unnecessary API calls and optimizes resource utilization for commit message generation.
+- **Efficient Diff Processing**: File change manifest generation operates on raw diffs before truncation, ensuring accurate context without reprocessing.
 
 [No sources needed since this section provides general guidance]
 
@@ -423,6 +553,13 @@ Host --> ConfigMgr["internal/backend/server/config/manager.go"]
 - Upstream URL parsing:
   - Ensure X-Server-Upstream-URL is valid and uses http/https schemes.
   - Empty or malformed URLs result in bad request responses.
+- **Commit Message Generation Issues**:
+  - Check adaptive budget calculations if commit messages are too short or incomplete.
+  - Verify file change manifests are being generated correctly for complex repositories.
+  - Monitor token usage patterns to optimize budget thresholds.
+- **Compaction Problems**:
+  - Review budget validation errors if conversations aren't being compacted properly.
+  - Check fallback mechanisms when primary compaction methods fail.
 
 **Section sources**
 - [host.go:199-253](file://internal/backend/host.go#L199-L253)
@@ -431,3 +568,5 @@ Host --> ConfigMgr["internal/backend/server/config/manager.go"]
 
 ## Conclusion
 The backend services architecture centers around a robust HTTP server managed by the Backend Host, with a flexible routing and middleware framework. The app runner orchestrates system services and ensures the backend is started and integrated with the UI. Routes cover REST and Connect protocols, supporting both local processing and upstream forwarding. Configuration hot reloading enables dynamic behavior without restarts. Health checks and comprehensive error handling improve reliability and observability.
+
+The enhanced forwarder component significantly improves commit message generation through adaptive token budget management, comprehensive file change manifest generation, and improved compaction summary handling. These enhancements provide better context awareness, more efficient resource utilization, and more reliable operation across diverse codebases and change patterns. The extensive test coverage ensures these features work correctly in various scenarios, from simple single-file changes to complex multi-file refactoring operations.

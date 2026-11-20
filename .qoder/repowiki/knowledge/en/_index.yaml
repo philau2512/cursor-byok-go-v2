@@ -3,11 +3,11 @@ schema_version: 1
 locale: en-US
 branch: enhance/optimize-stable-go-byok-v2
 nodes_managed: true
-exported_at: "2026-11-19T21:32:13Z"
+exported_at: "2026-11-20T12:43:23Z"
 modules:
     "":
-        dir_name: Cursor BYOK Go v2 Desktop Application
-        title: Cursor BYOK Go v2 Desktop Application
+        dir_name: Cursor BYOK Desktop Shell & Protocol Toolchain
+        title: Cursor BYOK Desktop Shell & Protocol Toolchain
         scope:
             - README.md
             - README-CN.md
@@ -67,8 +67,8 @@ modules:
         depends_on: []
         related_to: []
     prompts:
-        dir_name: Static Prompt Templates & Mode-Scoped Tool Catalog
-        title: Static Prompt Templates & Mode-Scoped Tool Catalog
+        dir_name: Mode-Specific Prompt & Tool Asset Loader
+        title: Mode-Specific Prompt & Tool Asset Loader
         scope:
             - prompt/
         source_files: []

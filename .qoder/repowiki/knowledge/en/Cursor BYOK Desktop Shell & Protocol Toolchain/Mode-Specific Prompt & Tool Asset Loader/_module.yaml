@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: prompts
-title: Static Prompt Templates & Mode-Scoped Tool Catalog
+title: Mode-Specific Prompt & Tool Asset Loader
 scope:
     - prompt/
 source_files: []

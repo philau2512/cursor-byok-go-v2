@@ -14,15 +14,17 @@
 - [commit_message.go](file://internal/backend/forwarder/commit_message.go)
 - [service.go](file://internal/backend/forwarder/service.go)
 - [commit_message_model_test.go](file://internal/backend/forwarder/commit_message_model_test.go)
+- [commit_message_manifest_test.go](file://internal/backend/forwarder/commit_message_manifest_test.go)
+- [prompt.md](file://prompt/commit/prompt.md)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added documentation for new `CommitMessageModel` configuration field for explicit commit message model selection
-- Added documentation for new `LastExplorerModelHash` configuration field for explorer model persistence
-- Updated configuration schema section with new model selection capabilities
-- Enhanced model resolution strategy documentation with priority chain
-- Added examples of enhanced model selection workflows
+- Added documentation for adaptive token budget calculation based on changed files count
+- Added documentation for file change manifest generation and its role in commit message quality
+- Enhanced commit message prompt template documentation with structured file information
+- Updated model selection chain documentation with improved priority resolution
+- Added comprehensive examples of enhanced commit message generation workflow
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -41,7 +43,7 @@ This document explains the configuration management system used by cursor-byok. 
 
 The configuration system is centered around a normalized `Config` structure stored in a user-level YAML file. A store layer handles persistence, while a manager provides an in-memory view with hot reload and listener notifications. The client layer integrates this configuration into the proxy service and exposes it to the frontend.
 
-**Updated** Enhanced with advanced model selection capabilities including explicit commit message model configuration and explorer model hash persistence for improved task-specific model routing.
+**Updated** Enhanced with advanced model selection capabilities including explicit commit message model configuration, explorer model hash persistence, adaptive token budget calculation, and intelligent file change manifest generation for improved task-specific model routing and commit message quality.
 
 ## Project Structure
 The configuration system spans several packages:
@@ -49,7 +51,7 @@ The configuration system spans several packages:
 - `internal/backend/server/config`: Core configuration types, normalization, persistence, hot reload, and channel resolution.
 - `internal/client`: Client-side integration that resolves configuration paths and emits configuration change events.
 - `internal/appdata`: Application data path helpers that determine where configuration files are stored.
-- `internal/backend/forwarder`: Advanced model selection logic for commit messages and explorer tasks.
+- `internal/backend/forwarder`: Advanced model selection logic for commit messages and explorer tasks with adaptive token budgeting.
 - `cursor-tab-server`: Example server configuration file demonstrating token usage outside the main configuration schema.
 
 ```mermaid
@@ -63,9 +65,10 @@ Manager["backend/server/config/manager.go"]
 Types["backend/server/config/types.go"]
 Resolver["backend/server/config/resolver.go"]
 end
-subgraph "Advanced Model Selection"
+subgraph "Advanced Model Selection & Commit Message Generation"
 Forwarder["backend/forwarder/commit_message.go"]
 Service["backend/forwarder/service.go"]
+PromptAssets["prompt/commit/prompt.md"]
 end
 subgraph "App Data Paths"
 Paths["appdata/paths.go"]
@@ -80,6 +83,7 @@ Manager --> Resolver
 Store --> Types
 Resolver --> Types
 Forwarder --> Service
+Forwarder --> PromptAssets
 Service --> Manager
 ClientConfig --> Paths
 TabConfig -. "example token config" .-> ClientConfig
@@ -92,8 +96,9 @@ TabConfig -. "example token config" .-> ClientConfig
 - [types.go:51-93](file://internal/backend/server/config/types.go#L51-L93)
 - [resolver.go:19-28](file://internal/backend/server/config/resolver.go#L19-L28)
 - [paths.go:31-34](file://internal/appdata/paths.go#L31-L34)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:123-156](file://internal/backend/forwarder/commit_message.go#L123-L156)
 - [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
+- [prompt.md:1-30](file://prompt/commit/prompt.md#L1-L30)
 - [config.yaml:1-2](file://cursor-tab-server/config.yaml#L1-L2)
 
 **Section sources**
@@ -103,8 +108,9 @@ TabConfig -. "example token config" .-> ClientConfig
 - [types.go:51-93](file://internal/backend/server/config/types.go#L51-L93)
 - [resolver.go:19-28](file://internal/backend/server/config/resolver.go#L19-L28)
 - [paths.go:31-34](file://internal/appdata/paths.go#L31-L34)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:123-156](file://internal/backend/forwarder/commit_message.go#L123-L156)
 - [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
+- [prompt.md:1-30](file://prompt/commit/prompt.md#L1-L30)
 - [config.yaml:1-2](file://cursor-tab-server/config.yaml#L1-L2)
 
 ## Core Components
@@ -122,7 +128,7 @@ Key responsibilities:
 - Persistence uses atomic write patterns via temporary files.
 - Hot reload detects file changes and notifies subscribers.
 - Channel resolution converts adapters into runtime channels.
-- **Enhanced model selection supports explicit commit message model configuration and explorer model hash tracking.**
+- **Enhanced model selection supports explicit commit message model configuration, explorer model hash tracking, adaptive token budget calculation, and intelligent file change manifest generation.**
 
 **Section sources**
 - [types.go:15-93](file://internal/backend/server/config/types.go#L15-L93)
@@ -139,7 +145,7 @@ The configuration architecture follows a layered design:
 - Store performs YAML parsing, normalization, and persistence.
 - Manager maintains an atomic current configuration snapshot and triggers hot reload when the underlying file changes.
 - Resolver selects appropriate model adapters based on requested model identifiers.
-- **Advanced model selection layer provides intelligent fallback chains for commit message generation and explorer tasks.**
+- **Advanced model selection layer provides intelligent fallback chains for commit message generation with adaptive token budgeting and file change manifest generation.**
 
 ```mermaid
 sequenceDiagram
@@ -149,6 +155,7 @@ participant Manager as "backend/server/config/manager.go"
 participant Store as "backend/server/config/store.go"
 participant FS as "Filesystem"
 participant Forwarder as "backend/forwarder/commit_message.go"
+participant PromptAssets as "prompt/commit/prompt.md"
 Frontend->>Client : LoadUserConfig()
 Client->>Manager : Current()
 Manager->>Store : Load(ctx)
@@ -159,15 +166,19 @@ Store-->>Manager : Config
 Manager-->>Client : Config
 Client-->>Frontend : Config
 Note over Store,FS : On Save, Store writes to temp file then renames atomically
-Forwarder->>Manager : CommitMessageModel()
-Forwarder->>Manager : LastExplorerModelHash()
+Forwarder->>PromptAssets : ReadCommitPrompt()
+Forwarder->>Forwarder : buildCommitMessagePrompt()
+Forwarder->>Forwarder : summarizeCommitMessageFiles()
+Forwarder->>Forwarder : formatCommitMessageManifest()
+Forwarder->>Forwarder : commitMessageOutputBudget()
 ```
 
 **Diagram sources**
 - [config.go:16-38](file://internal/client/config.go#L16-L38)
 - [manager.go:44-50](file://internal/backend/server/config/manager.go#L44-L50)
 - [store.go:63-96](file://internal/backend/server/config/store.go#L63-L96)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:123-156](file://internal/backend/forwarder/commit_message.go#L123-L156)
+- [prompt.md:1-30](file://prompt/commit/prompt.md#L1-L30)
 
 ## Detailed Component Analysis
 
@@ -236,13 +247,39 @@ Error --> End
 
 ### Enhanced Model Selection Capabilities
 
-**New** The configuration system now supports advanced model selection capabilities through two new fields:
+**Updated** The configuration system now supports advanced model selection capabilities through two new fields with enhanced commit message generation features:
 
 #### CommitMessageModel Field
 The `commitMessageModel` field allows users to explicitly configure which model should be used for generating commit messages and optimizing prompts. When set to empty or "auto", the system automatically determines the best model using a priority chain.
 
 #### LastExplorerModelHash Field  
 The `lastExplorerModelHash` field persists the model hash from Explorer/explore subagent operations. This creates a memory of the most recently used explorer model, which takes precedence in the model selection chain for auxiliary tasks.
+
+#### Adaptive Token Budget Calculation
+The commit message generation system now includes **adaptive token budget calculation** based on the number of changed files. This ensures optimal resource allocation for different commit sizes:
+
+- **Base budget**: 512 tokens for simple commits
+- **Per-file scaling**: +40 tokens per changed file
+- **Maximum cap**: 1,536 tokens to prevent excessive resource usage
+- **Negative handling**: Falls back to base budget for invalid counts
+
+#### File Change Manifest Generation
+The system generates a structured **file change manifest** that provides the model with concrete context about modified files, even when diffs are truncated:
+
+- Scans original diffs (before truncation) for accurate file counting
+- Tracks additions and deletions per file
+- Formats as human-readable bullet points
+- Caps at 200 files to maintain readability
+- Ensures model has factual anchors for commit body generation
+
+#### Improved Prompt Templates
+The commit message prompt templates have been enhanced with structured sections:
+
+- **System prompt**: Conventional Commits guidelines and formatting rules
+- **Recent commits**: Context from previous commit messages
+- **Explicit context**: User-provided additional context
+- **File manifest**: Structured list of changed files with change statistics
+- **Diffs**: Actual code changes with proper numbering
 
 #### Model Resolution Priority Chain
 The system uses a sophisticated priority chain for selecting models for commit message generation:
@@ -269,18 +306,23 @@ UseLive --> Resolve
 UsePersisted --> Resolve
 UseAgent --> Resolve
 DefaultFallback --> Resolve
-Resolve --> End(["Channel Selected"])
+Resolve --> BudgetCalc["Calculate adaptive token budget"]
+BudgetCalc --> ManifestGen["Generate file change manifest"]
+ManifestGen --> PromptBuild["Build enhanced prompt"]
+PromptBuild --> End(["Channel Selected"])
 ```
 
 **Diagram sources**
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:123-169](file://internal/backend/forwarder/commit_message.go#L123-L169)
 - [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
 
 **Section sources**
 - [types.go:59-64](file://internal/backend/server/config/types.go#L59-L64)
 - [manager.go:109-141](file://internal/backend/server/config/manager.go#L109-L141)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:123-169](file://internal/backend/forwarder/commit_message.go#L123-L169)
+- [commit_message.go:177-249](file://internal/backend/forwarder/commit_message.go#L177-L249)
 - [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
+- [prompt.md:1-30](file://prompt/commit/prompt.md#L1-L30)
 
 ### Configuration File Locations
 The primary configuration file is located under the application's root directory:
@@ -534,7 +576,7 @@ The configuration system exhibits clear separation of concerns:
 - `resolver.go` depends on adapter configuration to resolve runtime channels.
 - `client/config.go` bridges the client and backend configuration layers.
 - `appdata/paths.go` provides path resolution utilities.
-- **`commit_message.go` and `service.go` provide advanced model selection logic.**
+- **`commit_message.go` and `service.go` provide advanced model selection logic with adaptive token budgeting and file change manifest generation.**
 
 ```mermaid
 graph TB
@@ -548,6 +590,7 @@ Client --> Manager
 Paths["appdata/paths.go"] --> Client
 Forwarder["commit_message.go"] --> Manager
 Service["service.go"] --> Manager
+PromptAssets["prompt.md"] --> Forwarder
 ```
 
 **Diagram sources**
@@ -557,8 +600,9 @@ Service["service.go"] --> Manager
 - [resolver.go:19-28](file://internal/backend/server/config/resolver.go#L19-L28)
 - [config.go:16-38](file://internal/client/config.go#L16-L38)
 - [paths.go:31-34](file://internal/appdata/paths.go#L31-L34)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:123-169](file://internal/backend/forwarder/commit_message.go#L123-L169)
 - [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
+- [prompt.md:1-30](file://prompt/commit/prompt.md#L1-L30)
 
 **Section sources**
 - [types.go:51-93](file://internal/backend/server/config/types.go#L51-L93)
@@ -574,6 +618,8 @@ Service["service.go"] --> Manager
 - Atomic file writes reduce corruption risk during concurrent saves.
 - Listener notifications are executed after successful reload, minimizing unnecessary updates.
 - **Model selection chain evaluation is optimized with early termination and caching of resolved channels.**
+- **Adaptive token budget calculation prevents excessive resource usage while maintaining quality for large commits.**
+- **File change manifest generation operates on original diffs before truncation to ensure accurate context.**
 
 [No sources needed since this section provides general guidance]
 
@@ -585,11 +631,13 @@ Common issues and resolutions:
 - Hot reload not applying changes: Ensure the file was modified and that the reload interval has elapsed; check logs for reload errors.
 - Channel not available: Verify that the requested model ID matches a configured adapter.
 - **Model selection not working as expected: Check the priority chain - explicit configuration takes precedence over live overrides, which take precedence over persisted hashes, which take precedence over last agent model hash.**
+- **Poor commit message quality: Verify that file change manifests are being generated correctly and that adaptive token budgets are sufficient for the number of changed files.**
 
 Operational tips:
 - Inspect the configuration file path and logs directory using the path helpers.
 - Use the client's event emission mechanism to observe configuration changes in the frontend.
 - **Monitor the model selection source in logs to understand which priority level is being used for commit message generation.**
+- **Check commit message logs to verify that file manifests include all changed files, even when diffs are truncated.**
 
 **Section sources**
 - [store.go:71-96](file://internal/backend/server/config/store.go#L71-L96)
@@ -597,10 +645,11 @@ Operational tips:
 - [manager.go:180-214](file://internal/backend/server/config/manager.go#L180-L214)
 - [resolver.go:19-28](file://internal/backend/server/config/resolver.go#L19-L28)
 - [config.go:74-80](file://internal/client/config.go#L74-L80)
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:123-169](file://internal/backend/forwarder/commit_message.go#L123-L169)
+- [commit_message_manifest_test.go:92-123](file://internal/backend/forwarder/commit_message_manifest_test.go#L92-L123)
 
 ## Conclusion
-The cursor-byok configuration system provides a robust, normalized YAML-based configuration model with strong validation, safe persistence, and hot reload capabilities. **Enhanced with advanced model selection capabilities, the system now supports explicit commit message model configuration and explorer model hash persistence for improved task-specific model routing.** While environment variable overrides are not part of the main configuration schema, the system offers reliable file-based configuration management suitable for local development and production deployments. Sensitive data such as API keys should be protected through filesystem permissions and operational practices, as there is no built-in encryption for configuration storage.
+The cursor-byok configuration system provides a robust, normalized YAML-based configuration model with strong validation, safe persistence, and hot reload capabilities. **Enhanced with advanced model selection capabilities, adaptive token budget calculation, and intelligent file change manifest generation, the system now supports explicit commit message model configuration and explorer model hash persistence for improved task-specific model routing and commit message quality.** While environment variable overrides are not part of the main configuration schema, the system offers reliable file-based configuration management suitable for local development and production deployments. Sensitive data such as API keys should be protected through filesystem permissions and operational practices, as there is no built-in encryption for configuration storage.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
@@ -613,11 +662,16 @@ The cursor-byok configuration system provides a robust, normalized YAML-based co
 - Minimum provider stream idle timeout: enforced lower bound.
 - **Default commit message model: empty (automatic resolution enabled).**
 - **Default explorer model hash: empty (no persisted preference).**
+- **Commit message base output tokens: 512.**
+- **Commit message per-file output tokens: 40.**
+- **Commit message max output tokens: 1,536.**
+- **Commit message manifest max files: 200.**
 
 **Section sources**
 - [types.go:15-21](file://internal/backend/server/config/types.go#L15-L21)
 - [types.go:61-69](file://internal/backend/server/config/types.go#L61-L69)
 - [types.go:269-277](file://internal/backend/server/config/types.go#L269-L277)
+- [commit_message.go:20-30](file://internal/backend/forwarder/commit_message.go#L20-L30)
 
 ### Appendix B: Adapter Sorting Behavior
 - Explicit sort values are respected and normalized to stable ascending indices.
@@ -639,6 +693,33 @@ The enhanced model selection system uses the following priority chain for commit
 Each candidate is validated against available channels, with strict mode requiring exact channel ID matches for hashed values.
 
 **Section sources**
-- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message.go:258-303](file://internal/backend/forwarder/commit_message.go#L258-L303)
 - [commit_message_model_test.go:57-87](file://internal/backend/forwarder/commit_message_model_test.go#L57-L87)
 - [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
+
+### Appendix D: Adaptive Token Budget Calculation
+The adaptive token budget system calculates optimal token allocation based on changed file count:
+
+- **Formula**: `budget = base_tokens + (changed_files × per_file_tokens)`
+- **Base tokens**: 512 tokens for simple commits
+- **Per-file tokens**: 40 tokens per changed file
+- **Maximum cap**: 1,536 tokens to prevent excessive usage
+- **Edge cases**: Negative counts fall back to base budget
+
+**Section sources**
+- [commit_message.go:158-169](file://internal/backend/forwarder/commit_message.go#L158-L169)
+- [commit_message_manifest_test.go:77-90](file://internal/backend/forwarder/commit_message_manifest_test.go#L77-L90)
+
+### Appendix E: File Change Manifest Generation
+The file change manifest provides structured context about modified files:
+
+- **Scanning**: Analyzes original diffs before truncation for accuracy
+- **Tracking**: Counts additions and deletions per file
+- **Formatting**: Creates human-readable bullet points with change statistics
+- **Capping**: Limits to 200 files to maintain readability
+- **Integration**: Included in prompt even when diffs are truncated
+
+**Section sources**
+- [commit_message.go:177-249](file://internal/backend/forwarder/commit_message.go#L177-L249)
+- [commit_message_manifest_test.go:10-75](file://internal/backend/forwarder/commit_message_manifest_test.go#L10-L75)
+- [commit_message_manifest_test.go:92-123](file://internal/backend/forwarder/commit_message_manifest_test.go#L92-L123)

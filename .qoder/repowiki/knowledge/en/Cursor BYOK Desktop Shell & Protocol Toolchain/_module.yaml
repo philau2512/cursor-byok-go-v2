@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: ""
-title: Cursor BYOK Go v2 Desktop Application
+title: Cursor BYOK Desktop Shell & Protocol Toolchain
 scope:
     - README.md
     - README-CN.md

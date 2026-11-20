@@ -1,1 +1,0 @@
-Go v2 desktop application that embeds a Vue/Wails frontend and wires together Cursor protocol proxies, prompt assets, and cross-platform release tooling.
