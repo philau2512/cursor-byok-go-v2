@@ -22,7 +22,10 @@ const (
 	commitMessageSingleDiffLimit          = 40_000
 	commitMessagePreviousCommitLimit      = 12
 	commitMessageExplicitContextLimit     = 20_000
-	commitMessageMaxOutputTokens          = 512
+	commitMessageBaseOutputTokens         = 512
+	commitMessagePerFileOutputTokens      = 40
+	commitMessageMaxOutputTokens          = 1_536
+	commitMessageManifestMaxFiles         = 200
 	commitMessageGeneratedRequestIDPrefix = "commit-message-"
 )
 
@@ -51,7 +54,7 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 	if service.provider == nil {
 		return nil, commitMessageConnectError(recorder, connect.CodeInternal, fmt.Errorf("provider gateway is not initialized"))
 	}
-	messages, err := buildCommitMessagePrompt(req.Msg, diffs)
+	messages, changedFileCount, err := buildCommitMessagePrompt(req.Msg, diffs)
 	if err != nil {
 		return nil, commitMessageConnectError(recorder, connect.CodeInternal, err)
 	}
@@ -67,7 +70,7 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 		Mode:           agentv1.AgentMode_AGENT_MODE_AGENT,
 		Messages:       messages,
 		Tools:          nil,
-		MaxTokens:      commitMessageMaxOutputTokens,
+		MaxTokens:      commitMessageOutputBudget(changedFileCount),
 		CompileSummary: fmt.Sprintf("generate commit message diffs=%d previous_commits=%d model_source=%s model_source_value=%s", len(diffs), len(req.Msg.GetPreviousCommitMessages()), modelSource, modelSourceValue),
 		Observer:       recorder,
 		ArtifactPaths:  artifactPaths,
@@ -117,13 +120,13 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 	}), nil
 }
 
-func buildCommitMessagePrompt(req *aiserverv1.WriteGitCommitMessageRequest, diffs []string) ([]modeladapter.Message, error) {
+func buildCommitMessagePrompt(req *aiserverv1.WriteGitCommitMessageRequest, diffs []string) ([]modeladapter.Message, int, error) {
 	system, err := promptassets.ReadCommitPrompt()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if strings.TrimSpace(system) == "" {
-		return nil, fmt.Errorf("commit prompt asset is empty")
+		return nil, 0, fmt.Errorf("commit prompt asset is empty")
 	}
 	sections := []string{"Generate a Git commit message for the following changes."}
 	previous := truncateCommitMessagePreviousCommits(req.GetPreviousCommitMessages(), commitMessagePreviousCommitLimit)
@@ -131,9 +134,15 @@ func buildCommitMessagePrompt(req *aiserverv1.WriteGitCommitMessageRequest, diff
 		sections = append(sections, "Recent commit messages:\n"+strings.Join(previous, "\n"))
 	}
 	if contextJSON, err := marshalCommitMessageExplicitContext(req.GetExplicitContext()); err != nil {
-		return nil, err
+		return nil, 0, err
 	} else if contextJSON != "" {
 		sections = append(sections, "Explicit context:\n"+contextJSON)
+	}
+	// Manifest tính từ diffs GỐC (chưa truncate) để các file bị cắt khỏi budget vẫn
+	// hiện diện trong scope — bullets của model có neo thực tế thay vì suy đoán.
+	changedFiles := summarizeCommitMessageFiles(req.GetDiffs())
+	if manifest := formatCommitMessageManifest(changedFiles); manifest != "" {
+		sections = append(sections, manifest)
 	}
 	diffSections := make([]string, 0, len(diffs))
 	for index, diff := range diffs {
@@ -143,7 +152,100 @@ func buildCommitMessagePrompt(req *aiserverv1.WriteGitCommitMessageRequest, diff
 	return []modeladapter.Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: strings.Join(sections, "\n\n")},
-	}, nil
+	}, len(changedFiles), nil
+}
+
+// commitMessageOutputBudget nới dần output budget theo số file thay đổi, đủ cho
+// body 3-8 bullets kể cả khi model tiêu token cho reasoning; có trần cứng.
+func commitMessageOutputBudget(changedFileCount int) int {
+	if changedFileCount < 0 {
+		changedFileCount = 0
+	}
+	budget := commitMessageBaseOutputTokens + changedFileCount*commitMessagePerFileOutputTokens
+	if budget > commitMessageMaxOutputTokens {
+		return commitMessageMaxOutputTokens
+	}
+	return budget
+}
+
+type commitMessageFileChange struct {
+	Path      string
+	Additions int
+	Deletions int
+}
+
+// summarizeCommitMessageFiles quét header "diff --git a/... b/..." và đếm dòng +/-
+// của từng file trên toàn bộ diffs (kể cả diff sẽ bị truncate sau này).
+func summarizeCommitMessageFiles(diffs []string) []commitMessageFileChange {
+	var files []commitMessageFileChange
+	indexes := make(map[string]int)
+	current := -1
+	for _, diff := range diffs {
+		for _, line := range strings.Split(diff, "\n") {
+			if path, ok := commitMessageDiffHeaderPath(line); ok {
+				if idx, exists := indexes[path]; exists {
+					current = idx
+					continue
+				}
+				indexes[path] = len(files)
+				files = append(files, commitMessageFileChange{Path: path})
+				current = len(files) - 1
+				continue
+			}
+			if current < 0 {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+			case strings.HasPrefix(line, "+"):
+				files[current].Additions++
+			case strings.HasPrefix(line, "-"):
+				files[current].Deletions++
+			}
+		}
+	}
+	return files
+}
+
+// commitMessageDiffHeaderPath trích phía "b/" của header diff --git.
+// Best-effort với path chứa khoảng trắng (git quote những path đó); manifest
+// chỉ dùng để mô tả scope nên tên hiển thị không cần chính xác tuyệt đối.
+func commitMessageDiffHeaderPath(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "diff --git ") {
+		return "", false
+	}
+	parts := strings.Fields(strings.TrimPrefix(trimmed, "diff --git "))
+	if len(parts) == 0 {
+		return "", false
+	}
+	path := parts[len(parts)-1]
+	path = strings.TrimPrefix(path, "b/")
+	if path == "" {
+		return "", false
+	}
+	return path, true
+}
+
+func formatCommitMessageManifest(files []commitMessageFileChange) string {
+	if len(files) == 0 {
+		return ""
+	}
+	shown := files
+	omitted := 0
+	if len(files) > commitMessageManifestMaxFiles {
+		omitted = len(files) - commitMessageManifestMaxFiles
+		shown = files[:commitMessageManifestMaxFiles]
+	}
+	lines := make([]string, 0, len(shown)+2)
+	lines = append(lines, fmt.Sprintf("Files changed (%d):", len(files)))
+	for _, file := range shown {
+		lines = append(lines, fmt.Sprintf("- %s (+%d/-%d)", file.Path, file.Additions, file.Deletions))
+	}
+	if omitted > 0 {
+		lines = append(lines, fmt.Sprintf("- ... and %d more files", omitted))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (service *Service) commitMessageHistoryRoot() string {

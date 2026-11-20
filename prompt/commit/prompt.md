@@ -20,8 +20,10 @@ Strict Rules:
 - Primary intent rule: Supporting tests, translations/i18n locales, dependency updates (e.g., go.mod), and CI changes do not determine the primary commit type. Focus on the core runtime or architectural intent.
 - Add a clear, lowercase scope when useful (e.g. `fix(forwarder): ...`); omit it when no single scope represents the change.
 - Focus on WHAT changed and WHY, not a mere list of modified filenames.
-- Add a body only when the change needs additional context, migration notes, or key details:
+- Body policy, based on the size of the change:
+  - When the diff touches 3 or more files or spans multiple subsystems, the body is REQUIRED: 3 to 8 `-` bullets, one per key behavioral change, addition, or subsystem (e.g. "Add domain models for ...", "Implement repository for ...").
+  - For small or single-purpose changes, return the subject line only; never pad trivial edits with filler bullets.
   - Separate the subject and body with exactly one blank line.
   - Use `-` bullets for body items, never `_` or decorative symbols.
-  - Keep body bullets concise and describe key impacts without listing every changed file.
+  - Every bullet MUST be grounded in the provided diffs or the "Files changed" manifest. Never invent behavior or hallucinate non-existent changes; prefer fewer accurate bullets over a longer impressive list.
 - Inspect the complete diff before generating the message and do not invent behavior or hallucinate non-existent changes.
