@@ -11,7 +11,18 @@
 - [config_transfer.go](file://internal/client/config_transfer.go)
 - [types_test.go](file://internal/backend/server/config/types_test.go)
 - [config.yaml](file://cursor-tab-server/config.yaml)
+- [commit_message.go](file://internal/backend/forwarder/commit_message.go)
+- [service.go](file://internal/backend/forwarder/service.go)
+- [commit_message_model_test.go](file://internal/backend/forwarder/commit_message_model_test.go)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added documentation for new `CommitMessageModel` configuration field for explicit commit message model selection
+- Added documentation for new `LastExplorerModelHash` configuration field for explorer model persistence
+- Updated configuration schema section with new model selection capabilities
+- Enhanced model resolution strategy documentation with priority chain
+- Added examples of enhanced model selection workflows
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -30,12 +41,15 @@ This document explains the configuration management system used by cursor-byok. 
 
 The configuration system is centered around a normalized `Config` structure stored in a user-level YAML file. A store layer handles persistence, while a manager provides an in-memory view with hot reload and listener notifications. The client layer integrates this configuration into the proxy service and exposes it to the frontend.
 
+**Updated** Enhanced with advanced model selection capabilities including explicit commit message model configuration and explorer model hash persistence for improved task-specific model routing.
+
 ## Project Structure
 The configuration system spans several packages:
 
 - `internal/backend/server/config`: Core configuration types, normalization, persistence, hot reload, and channel resolution.
 - `internal/client`: Client-side integration that resolves configuration paths and emits configuration change events.
 - `internal/appdata`: Application data path helpers that determine where configuration files are stored.
+- `internal/backend/forwarder`: Advanced model selection logic for commit messages and explorer tasks.
 - `cursor-tab-server`: Example server configuration file demonstrating token usage outside the main configuration schema.
 
 ```mermaid
@@ -49,6 +63,10 @@ Manager["backend/server/config/manager.go"]
 Types["backend/server/config/types.go"]
 Resolver["backend/server/config/resolver.go"]
 end
+subgraph "Advanced Model Selection"
+Forwarder["backend/forwarder/commit_message.go"]
+Service["backend/forwarder/service.go"]
+end
 subgraph "App Data Paths"
 Paths["appdata/paths.go"]
 end
@@ -61,6 +79,8 @@ Manager --> Store
 Manager --> Resolver
 Store --> Types
 Resolver --> Types
+Forwarder --> Service
+Service --> Manager
 ClientConfig --> Paths
 TabConfig -. "example token config" .-> ClientConfig
 ```
@@ -72,6 +92,8 @@ TabConfig -. "example token config" .-> ClientConfig
 - [types.go:51-93](file://internal/backend/server/config/types.go#L51-L93)
 - [resolver.go:19-28](file://internal/backend/server/config/resolver.go#L19-L28)
 - [paths.go:31-34](file://internal/appdata/paths.go#L31-L34)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
 - [config.yaml:1-2](file://cursor-tab-server/config.yaml#L1-L2)
 
 **Section sources**
@@ -81,13 +103,15 @@ TabConfig -. "example token config" .-> ClientConfig
 - [types.go:51-93](file://internal/backend/server/config/types.go#L51-L93)
 - [resolver.go:19-28](file://internal/backend/server/config/resolver.go#L19-L28)
 - [paths.go:31-34](file://internal/appdata/paths.go#L31-L34)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
 - [config.yaml:1-2](file://cursor-tab-server/config.yaml#L1-L2)
 
 ## Core Components
-- `Config`: Top-level configuration object including logging flags, provider stream idle timeout, backend and proxy listen addresses, model adapters, home metrics settings, and last agent model hash.
+- `Config`: Top-level configuration object including logging flags, provider stream idle timeout, backend and proxy listen addresses, model adapters, home metrics settings, last agent model hash, **commit message model configuration**, and **explorer model hash persistence**.
 - `ModelAdapterConfig`: Per-model adapter configuration including display name, provider type, base URL, API key, endpoint overrides, extra parameters, custom headers, token limits, and thinking-related options.
 - `Store`: File-backed persistence layer that reads, validates, normalizes, and writes the YAML configuration.
-- `Manager`: In-memory configuration manager with hot reload, listeners, and convenience methods for current configuration access.
+- `Manager`: In-memory configuration manager with hot reload, listeners, and convenience methods for current configuration access, including **new methods for commit message model and explorer model hash management**.
 - `Resolver`: Channel selection logic that maps requested model IDs to configured adapters.
 - `client/config.go`: Client integration that resolves configuration paths and delegates load/save operations.
 - `appdata/paths.go`: Path resolution utilities for configuration and logs directories.
@@ -98,6 +122,7 @@ Key responsibilities:
 - Persistence uses atomic write patterns via temporary files.
 - Hot reload detects file changes and notifies subscribers.
 - Channel resolution converts adapters into runtime channels.
+- **Enhanced model selection supports explicit commit message model configuration and explorer model hash tracking.**
 
 **Section sources**
 - [types.go:15-93](file://internal/backend/server/config/types.go#L15-L93)
@@ -114,6 +139,7 @@ The configuration architecture follows a layered design:
 - Store performs YAML parsing, normalization, and persistence.
 - Manager maintains an atomic current configuration snapshot and triggers hot reload when the underlying file changes.
 - Resolver selects appropriate model adapters based on requested model identifiers.
+- **Advanced model selection layer provides intelligent fallback chains for commit message generation and explorer tasks.**
 
 ```mermaid
 sequenceDiagram
@@ -122,6 +148,7 @@ participant Client as "client/config.go"
 participant Manager as "backend/server/config/manager.go"
 participant Store as "backend/server/config/store.go"
 participant FS as "Filesystem"
+participant Forwarder as "backend/forwarder/commit_message.go"
 Frontend->>Client : LoadUserConfig()
 Client->>Manager : Current()
 Manager->>Store : Load(ctx)
@@ -132,12 +159,15 @@ Store-->>Manager : Config
 Manager-->>Client : Config
 Client-->>Frontend : Config
 Note over Store,FS : On Save, Store writes to temp file then renames atomically
+Forwarder->>Manager : CommitMessageModel()
+Forwarder->>Manager : LastExplorerModelHash()
 ```
 
 **Diagram sources**
 - [config.go:16-38](file://internal/client/config.go#L16-L38)
 - [manager.go:44-50](file://internal/backend/server/config/manager.go#L44-L50)
 - [store.go:63-96](file://internal/backend/server/config/store.go#L63-L96)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
 
 ## Detailed Component Analysis
 
@@ -150,6 +180,8 @@ The top-level `Config` includes:
 - `modelAdapters`: Array of model adapter configurations.
 - `homeMetrics`: Home metrics settings, including cache hit rate calculation options.
 - `lastAgentModelHash`: Last known agent model hash.
+- **`commitMessageModel`**: Explicit model ID for commit message generation; empty or "auto" enables automatic chain resolution.
+- **`lastExplorerModelHash`**: Persisted explorer model hash from subagent model overrides, used as priority model for auxiliary tasks like commit message generation.
 
 Defaults:
 - Logging disabled.
@@ -157,6 +189,8 @@ Defaults:
 - Backend listen address defaults to localhost port 18090.
 - Proxy listen address defaults to localhost port 18080.
 - Model adapters array starts empty.
+- **Commit message model defaults to empty (automatic resolution).**
+- **Explorer model hash defaults to empty (no persisted preference).**
 
 Validation and normalization:
 - Listen addresses must be valid host:port strings with ports in range 1–65535.
@@ -168,6 +202,7 @@ Validation and normalization:
 - Custom headers JSON must be a string-to-string map with non-empty header names.
 - Duplicate adapter channel IDs are rejected.
 - Sort order is normalized to stable ascending indices.
+- **Commit message model and explorer model hash are trimmed and normalized but not strictly validated.**
 
 ```mermaid
 flowchart TD
@@ -179,8 +214,12 @@ Adapters --> |No| SkipAdapters["Skip adapter normalization"]
 NormalizeAdapters --> CheckDupes{"Duplicate channel ID?"}
 CheckDupes --> |Yes| Error["Return validation error"]
 CheckDupes --> |No| SortAdapters["Normalize sort order"]
-SkipAdapters --> PersistCheck["Decide whether to persist normalized config"]
-SortAdapters --> PersistCheck
+SkipAdapters --> ModelFields{"Has model selection fields?"}
+SortAdapters --> ModelFields
+ModelFields --> |Yes| NormalizeModelFields["Trim and normalize<br/>- commitMessageModel<br/>- lastExplorerModelHash"]
+ModelFields --> |No| SkipModelFields["Skip model field normalization"]
+NormalizeModelFields --> PersistCheck["Decide whether to persist normalized config"]
+SkipModelFields --> PersistCheck
 PersistCheck --> Persist["Write temp file then rename"]
 Persist --> End(["Normalized Config"])
 Error --> End
@@ -195,8 +234,56 @@ Error --> End
 - [types.go:95-172](file://internal/backend/server/config/types.go#L95-L172)
 - [types.go:249-284](file://internal/backend/server/config/types.go#L249-L284)
 
+### Enhanced Model Selection Capabilities
+
+**New** The configuration system now supports advanced model selection capabilities through two new fields:
+
+#### CommitMessageModel Field
+The `commitMessageModel` field allows users to explicitly configure which model should be used for generating commit messages and optimizing prompts. When set to empty or "auto", the system automatically determines the best model using a priority chain.
+
+#### LastExplorerModelHash Field  
+The `lastExplorerModelHash` field persists the model hash from Explorer/explore subagent operations. This creates a memory of the most recently used explorer model, which takes precedence in the model selection chain for auxiliary tasks.
+
+#### Model Resolution Priority Chain
+The system uses a sophisticated priority chain for selecting models for commit message generation:
+
+1. **Explicit Configuration** (`commitMessageModel`) - User-configured model ID
+2. **Live Explorer Override** - Real-time subagent model overrides from client
+3. **Persisted Explorer Hash** (`lastExplorerModelHash`) - Previously saved explorer model
+4. **Last Agent Model Hash** - Most recent main chat model
+5. **Default Fallback** - Let resolver choose default channel
+
+```mermaid
+flowchart TD
+Start(["Commit Message Generation"]) --> CheckExplicit{"commitMessageModel set?"}
+CheckExplicit --> |Yes| UseExplicit["Use explicit model"]
+CheckExplicit --> |No| CheckLive{"Live explorer override?"}
+CheckLive --> |Yes| UseLive["Use live override"]
+CheckLive --> |No| CheckPersisted{"lastExplorerModelHash exists?"}
+CheckPersisted --> |Yes| UsePersisted["Use persisted explorer hash"]
+CheckPersisted --> |No| CheckAgent{"lastAgentModelHash exists?"}
+CheckAgent --> |Yes| UseAgent["Use last agent model"]
+CheckAgent --> |No| DefaultFallback["Use default resolver"]
+UseExplicit --> Resolve["Resolve to channel"]
+UseLive --> Resolve
+UsePersisted --> Resolve
+UseAgent --> Resolve
+DefaultFallback --> Resolve
+Resolve --> End(["Channel Selected"])
+```
+
+**Diagram sources**
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
+
+**Section sources**
+- [types.go:59-64](file://internal/backend/server/config/types.go#L59-L64)
+- [manager.go:109-141](file://internal/backend/server/config/manager.go#L109-L141)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
+
 ### Configuration File Locations
-The primary configuration file is located under the application’s root directory:
+The primary configuration file is located under the application's root directory:
 - Root directory: User home directory joined with `.cursor-local-assistant-v2`.
 - Configuration file: `<root>/config.yaml`.
 - Logs root directory: `<root>/logs`.
@@ -286,7 +373,7 @@ end
 
 ### Runtime Updates Without Service Restart
 Hot reload is supported:
-- The manager periodically checks the configuration file’s metadata (existence, modification time, size).
+- The manager periodically checks the configuration file's metadata (existence, modification time, size).
 - If the file has changed since the last reload, it reloads and persists normalized configuration.
 - Reload errors are logged once per distinct error message.
 - Subscribers registered via `Subscribe` receive the new configuration after successful reload.
@@ -316,6 +403,7 @@ Migration behavior is primarily handled through normalization and persistence de
 - Missing listen addresses are filled with defaults.
 - Provider stream idle timeout is clamped to minimum or default.
 - Adapter fields are normalized and validated.
+- **New model selection fields are automatically normalized and included in persisted configuration.**
 - If legacy routing fields are present or essential fields are missing, the normalized configuration is persisted to ensure consistency.
 
 There is no explicit multi-version migration pipeline in the configuration package; instead, normalization ensures that the persisted file reflects a canonical form.
@@ -378,6 +466,8 @@ Recommended fields:
 - `backendListenAddr`: String in host:port format for backend service.
 - `proxyListenAddr`: String in host:port format for proxy service.
 - `modelAdapters`: Array of adapter objects.
+- **`commitMessageModel`**: Optional explicit model ID for commit message generation, or "auto" for automatic selection.
+- **`lastExplorerModelHash`**: Optional persisted explorer model hash for priority model selection.
 
 Model adapter recommended fields:
 - `displayName`: Human-readable adapter name.
@@ -444,6 +534,7 @@ The configuration system exhibits clear separation of concerns:
 - `resolver.go` depends on adapter configuration to resolve runtime channels.
 - `client/config.go` bridges the client and backend configuration layers.
 - `appdata/paths.go` provides path resolution utilities.
+- **`commit_message.go` and `service.go` provide advanced model selection logic.**
 
 ```mermaid
 graph TB
@@ -455,6 +546,8 @@ Resolver --> Manager
 Client["client/config.go"] --> Store
 Client --> Manager
 Paths["appdata/paths.go"] --> Client
+Forwarder["commit_message.go"] --> Manager
+Service["service.go"] --> Manager
 ```
 
 **Diagram sources**
@@ -464,6 +557,8 @@ Paths["appdata/paths.go"] --> Client
 - [resolver.go:19-28](file://internal/backend/server/config/resolver.go#L19-L28)
 - [config.go:16-38](file://internal/client/config.go#L16-L38)
 - [paths.go:31-34](file://internal/appdata/paths.go#L31-L34)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)
 
 **Section sources**
 - [types.go:51-93](file://internal/backend/server/config/types.go#L51-L93)
@@ -478,6 +573,7 @@ Paths["appdata/paths.go"] --> Client
 - Normalization occurs on both load and save, ensuring consistent persisted state.
 - Atomic file writes reduce corruption risk during concurrent saves.
 - Listener notifications are executed after successful reload, minimizing unnecessary updates.
+- **Model selection chain evaluation is optimized with early termination and caching of resolved channels.**
 
 [No sources needed since this section provides general guidance]
 
@@ -488,10 +584,12 @@ Common issues and resolutions:
 - Validation errors: Correct required fields, adapter types, endpoint values, JSON structures, and duplicate adapter IDs.
 - Hot reload not applying changes: Ensure the file was modified and that the reload interval has elapsed; check logs for reload errors.
 - Channel not available: Verify that the requested model ID matches a configured adapter.
+- **Model selection not working as expected: Check the priority chain - explicit configuration takes precedence over live overrides, which take precedence over persisted hashes, which take precedence over last agent model hash.**
 
 Operational tips:
 - Inspect the configuration file path and logs directory using the path helpers.
-- Use the client’s event emission mechanism to observe configuration changes in the frontend.
+- Use the client's event emission mechanism to observe configuration changes in the frontend.
+- **Monitor the model selection source in logs to understand which priority level is being used for commit message generation.**
 
 **Section sources**
 - [store.go:71-96](file://internal/backend/server/config/store.go#L71-L96)
@@ -499,9 +597,10 @@ Operational tips:
 - [manager.go:180-214](file://internal/backend/server/config/manager.go#L180-L214)
 - [resolver.go:19-28](file://internal/backend/server/config/resolver.go#L19-L28)
 - [config.go:74-80](file://internal/client/config.go#L74-L80)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
 
 ## Conclusion
-The cursor-byok configuration system provides a robust, normalized YAML-based configuration model with strong validation, safe persistence, and hot reload capabilities. While environment variable overrides are not part of the main configuration schema, the system offers reliable file-based configuration management suitable for local development and production deployments. Sensitive data such as API keys should be protected through filesystem permissions and operational practices, as there is no built-in encryption for configuration storage.
+The cursor-byok configuration system provides a robust, normalized YAML-based configuration model with strong validation, safe persistence, and hot reload capabilities. **Enhanced with advanced model selection capabilities, the system now supports explicit commit message model configuration and explorer model hash persistence for improved task-specific model routing.** While environment variable overrides are not part of the main configuration schema, the system offers reliable file-based configuration management suitable for local development and production deployments. Sensitive data such as API keys should be protected through filesystem permissions and operational practices, as there is no built-in encryption for configuration storage.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
@@ -512,6 +611,8 @@ The cursor-byok configuration system provides a robust, normalized YAML-based co
 - Default proxy listen address: localhost port 18080.
 - Default provider stream idle timeout: default seconds with a minimum threshold.
 - Minimum provider stream idle timeout: enforced lower bound.
+- **Default commit message model: empty (automatic resolution enabled).**
+- **Default explorer model hash: empty (no persisted preference).**
 
 **Section sources**
 - [types.go:15-21](file://internal/backend/server/config/types.go#L15-L21)
@@ -525,3 +626,19 @@ The cursor-byok configuration system provides a robust, normalized YAML-based co
 **Section sources**
 - [types.go:174-192](file://internal/backend/server/config/types.go#L174-L192)
 - [types_test.go:19-60](file://internal/backend/server/config/types_test.go#L19-L60)
+
+### Appendix C: Model Selection Priority Chain
+The enhanced model selection system uses the following priority chain for commit message generation:
+
+1. **Explicit Configuration** (`commitMessageModel`) - Direct user configuration
+2. **Live Explorer Override** - Real-time subagent model overrides from client requests
+3. **Persisted Explorer Hash** (`lastExplorerModelHash`) - Previously saved explorer model
+4. **Last Agent Model Hash** - Most recent main chat model
+5. **Default Fallback** - Let resolver choose default channel
+
+Each candidate is validated against available channels, with strict mode requiring exact channel ID matches for hashed values.
+
+**Section sources**
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [commit_message_model_test.go:57-87](file://internal/backend/forwarder/commit_message_model_test.go#L57-L87)
+- [service.go:1998-2053](file://internal/backend/forwarder/service.go#L1998-L2053)

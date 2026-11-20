@@ -6,4 +6,6 @@ scope:
 source_files: []
 depends_on: []
 related_to:
+    - path: cursor_tab_server
     - path: proto_and_generated
+    - path: scripts_and_tools

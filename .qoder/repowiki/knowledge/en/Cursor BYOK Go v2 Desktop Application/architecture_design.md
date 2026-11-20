@@ -1,4 +1,4 @@
-The root `main.go` is the single entry point: it initializes logging, then calls `app.Run` with resources embedded via `//go:embed` (`frontend/dist`, `build/appicon.png`, `build/tray.png`). The Go module `cursor` (Go 1.25) owns the Wails-based desktop app and its internal packages; sibling directories are separate Go modules or tooling:
+The root `main.go` is the single entry point: it initializes logging and calls `app.Run` with resources embedded via `//go:embed` (`frontend/dist`, `build/appicon.png`, `build/tray.png`). The Go module `cursor` (Go 1.25) owns the Wails-based desktop app and its internal packages; sibling directories are separate Go modules or tooling:
 - `frontend/` — Vue 3 + Vite + Wails UI, built into `frontend/dist` and embedded at compile time.
 - `cursor_tab_server/` — standalone Go HTTP proxy for gRPC-Web tab completion, built and published as a Docker image via `task cursor-tab-server:docker:amd64`.
 - `cursor_proxy_debugger/` — standalone HTTPS MITM proxy for Cursor BidiAppend/RunSSE/Fork Chat traffic, launched via `task proxy-debugger`.

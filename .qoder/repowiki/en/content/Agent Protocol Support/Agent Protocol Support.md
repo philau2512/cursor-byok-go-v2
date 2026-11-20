@@ -16,15 +16,16 @@
 - [mcp.go](file://internal/backend/agent/core/mcp.go)
 - [local_discovery.go](file://internal/backend/agent/prompt/local_discovery.go)
 - [request_context.go](file://internal/backend/forwarder/request_context.go)
+- [commit_message.go](file://internal/backend/forwarder/commit_message.go)
+- [engine_test.go](file://internal/backend/agent/prompt/engine_test.go)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced MCP integration with improved schema discovery and lazy loading mechanisms
-- Added error recovery mechanisms for MCP parameter validation failures
-- Implemented improved tool definition path tracking and resolution
-- Updated MCP prompt generation with better schema guidance and fallback descriptions
-- Added comprehensive test coverage for MCP schema healing functionality
+- Enhanced slash command processing with improved skill hijacking prevention in prompt engine
+- Added advanced multi-tier model selection system for commit message generation in forwarder service
+- Updated skill detection logic to prevent Cursor built-in commands from hijacking ak-* skills
+- Implemented sophisticated model resolution chain with live explorer overrides and persistent fallbacks
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -32,17 +33,19 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Enhanced MCP Integration](#enhanced-mcp-integration)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
+6. [Enhanced Slash Command Processing](#enhanced-slash-command-processing)
+7. [Advanced Multi-Tier Model Selection](#advanced-multi-tier-model-selection)
+8. [Enhanced MCP Integration](#enhanced-mcp-integration)
+9. [Dependency Analysis](#dependency-analysis)
+10. [Performance Considerations](#performance-considerations)
+11. [Troubleshooting Guide](#troubleshooting-guide)
+12. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains how cursor-byok implements Cursor's Agent protocol so that a local service can act as Cursor's backend while routing model requests to upstream OpenAI- or Anthropic-compatible providers. The implementation preserves Cursor Agent capabilities including:
 
 - Tool calling and tool result coordination
-- Skills discovery and slash-command invocation
+- Skills discovery and slash-command invocation with enhanced hijacking prevention
 - MCP (Model Context Protocol) descriptors and file-system-based MCP servers
 - Multi-turn conversation state, plans, todos, summaries, and checkpoints
 - Streaming responses with heartbeats, cancellation, and terminal error propagation
@@ -443,6 +446,113 @@ Key responsibilities include:
 - [route.go:68-129](file://internal/backend/server/route.go#L68-L129)
 - [route.go:131-171](file://internal/backend/server/route.go#L131-L171)
 
+## Enhanced Slash Command Processing
+
+### Improved Skill Hijacking Prevention
+The enhanced slash command processing introduces sophisticated skill hijacking prevention mechanisms that ensure Cursor's built-in commands don't accidentally trigger custom skills:
+
+**Exact Name Matching**: The `detectInvokedSkill` function now performs exact case-insensitive matching between slash commands and skill names, preventing partial matches that could cause unintended skill loading.
+
+**Built-in Command Protection**: Cursor's built-in commands like `/plan`, `/review`, `/test` are specifically protected from hijacking skills with similar names (e.g., `ak-plan`). This prevents accidental activation of custom skills when users invoke Cursor's native functionality.
+
+**Prefix Preservation**: The system no longer strips or appends the `ak-` prefix when matching commands, ensuring that only exact skill name matches trigger skill loading.
+
+**Enhanced Validation Logic**: The detection algorithm now validates both the command syntax and the skill naming conventions, providing robust protection against accidental skill hijacking while maintaining full compatibility with explicit skill invocations.
+
+```mermaid
+flowchart TD
+UserInput["User Input"] --> ExtractCommands["Extract Slash Commands"]
+ExtractCommands --> ValidateSyntax["Validate Command Syntax"]
+ValidateSyntax --> MatchSkills["Match Against Available Skills"]
+MatchSkills --> ExactCheck{"Exact Name Match?"}
+ExactCheck --> |Yes| LoadSkill["Load Skill & Add Reminder"]
+ExactCheck --> |No| CheckBuiltins["Check Built-in Commands"]
+CheckBuiltins --> |Built-in| SkipHijack["Prevent Hijacking"]
+CheckBuiltins --> |Custom| MatchSkills
+LoadSkill --> GeneratePrompt["Generate Enhanced Prompt"]
+SkipHijack --> GeneratePrompt
+```
+
+**Diagram sources**
+- [engine.go:553-608](file://internal/backend/agent/prompt/engine.go#L553-L608)
+- [engine_test.go:651-690](file://internal/backend/agent/prompt/engine_test.go#L651-L690)
+
+### Enhanced Skill Detection Algorithm
+The improved detection algorithm processes user input through multiple validation stages:
+
+1. **Command Extraction**: Parses user text to extract all slash commands, stripping punctuation and normalizing case.
+2. **Skill Name Derivation**: Converts skill file paths to normalized skill names, handling both `SKILL.md` files and direct file references.
+3. **Exact Matching**: Performs strict case-insensitive comparison between extracted commands and derived skill names.
+4. **Built-in Protection**: Specifically protects Cursor's built-in commands from triggering custom skills with similar names.
+
+The system maintains backward compatibility by still supporting explicit skill invocations like `/ak-plan` while preventing accidental hijacking of built-in commands like `/plan`.
+
+**Section sources**
+- [engine.go:553-608](file://internal/backend/agent/prompt/engine.go#L553-L608)
+- [engine_test.go:651-690](file://internal/backend/agent/prompt/engine_test.go#L651-L690)
+
+## Advanced Multi-Tier Model Selection
+
+### Sophisticated Model Resolution Chain
+The advanced multi-tier model selection system provides intelligent model resolution for commit message generation and other secondary tasks through a prioritized chain of candidates:
+
+**Priority-Based Resolution**: The system evaluates model candidates in a specific priority order:
+1. **Explicit Configuration**: User-configured `commitMessageModel` takes highest priority
+2. **Live Explorer Overrides**: Real-time subagent model overrides from the current session
+3. **Persistent Explorer Hash**: Last saved explorer model hash for consistency across restarts
+4. **Last Agent Model Hash**: Fallback to the most recent primary chat model
+5. **Default Fallback**: System default resolver when no specific model is available
+
+**Strict vs Flexible Resolution**: The system distinguishes between strict and flexible model resolution:
+- **Strict Mode**: Requires the resolved channel ID to exactly match the stored hash (for persistent values)
+- **Flexible Mode**: Allows any valid channel resolution (for dynamic/live values)
+
+**Live Explorer Integration**: The system integrates with real-time subagent model overrides, capturing the explorer model ID that Task subagent routing would use, ensuring consistency between exploration and commit message generation.
+
+```mermaid
+flowchart TD
+Start["Commit Message Generation"] --> CheckConfig{"Check Explicit Config"}
+CheckConfig --> |Found| UseConfig["Use commitMessageModel"]
+CheckConfig --> |Not Found| CheckLive{"Check Live Explorer Overrides"}
+CheckLive --> |Available| UseLive["Use liveExplorerModelID()"]
+CheckLive --> |Not Available| CheckPersist{"Check Persistent Explorer Hash"}
+CheckPersist --> |Found| UsePersist["Use lastExplorerModelHash"]
+CheckPersist --> |Not Found| CheckAgent{"Check Last Agent Model Hash"}
+CheckAgent --> |Found| UseAgent["Use lastAgentModelHash"]
+CheckAgent --> |Not Found| Default["Use Default Fallback"]
+UseConfig --> Validate["Validate & Resolve Channel"]
+UseLive --> Validate
+UsePersist --> Validate
+UseAgent --> Validate
+Default --> Validate
+Validate --> Success{"Resolution Successful?"}
+Success --> |Yes| ReturnModel["Return Validated Model ID"]
+Success --> |No| NextCandidate["Try Next Candidate"]
+NextCandidate --> CheckConfig
+```
+
+**Diagram sources**
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [service.go:2010-2022](file://internal/backend/forwarder/service.go#L2010-L2022)
+- [service.go:2055-2064](file://internal/backend/forwarder/service.go#L2055-L2064)
+
+### Explorer Model Override Management
+The system includes sophisticated management of explorer model overrides:
+
+**Real-Time Capture**: The `liveExplorerModelID()` function provides immediate access to the explorer model ID that would be used by Task subagent routing, ensuring consistency across different parts of the system.
+
+**Override Persistence**: The `maybeCaptureExplorerModelHash()` function automatically captures and persists explorer model hashes when they change, providing stability across application restarts.
+
+**Chain Consistency**: The `explorerSubagentOverrideModelID()` function ensures that the same lookup chain used by Task subagent routing (`explore` → `generalPurpose`) is applied consistently throughout the system.
+
+**Error Handling**: The system gracefully handles missing or invalid overrides, falling back to previous candidates or default behavior without breaking the overall workflow.
+
+**Section sources**
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [service.go:2010-2022](file://internal/backend/forwarder/service.go#L2010-L2022)
+- [service.go:2025-2053](file://internal/backend/forwarder/service.go#L2025-L2053)
+- [service.go:2055-2064](file://internal/backend/forwarder/service.go#L2055-L2064)
+
 ## Enhanced MCP Integration
 
 ### Schema Discovery and Lazy Loading
@@ -535,6 +645,7 @@ ForwarderService --> MCPSchemaHeal["mcp_schema_heal.go"]
 MCPSchemaHeal --> CoreMCP["core/mcp.go"]
 PromptEngine --> LocalDiscovery["prompt/local_discovery.go"]
 ForwarderService --> RequestContext["forwarder/request_context.go"]
+ForwarderService --> CommitMessage["forwarder/commit_message.go"]
 ```
 
 **Diagram sources**
@@ -551,6 +662,7 @@ ForwarderService --> RequestContext["forwarder/request_context.go"]
 - [mcp.go:1-111](file://internal/backend/agent/core/mcp.go#L1-L111)
 - [local_discovery.go:650-805](file://internal/backend/agent/prompt/local_discovery.go#L650-L805)
 - [request_context.go:379-427](file://internal/backend/forwarder/request_context.go#L379-L427)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
 
 **Section sources**
 - [inbound.go:38-96](file://internal/backend/agent/protocol/inbound.go#L38-L96)
@@ -577,6 +689,8 @@ Several mechanisms in the codebase are designed to keep streaming responsive and
 | MCP schema caching | File modification time-based caching for schema reads | Reduces disk I/O while maintaining schema freshness. |
 | Schema budget limits | Tiered budgets for inline vs lazy-loaded schemas | Balances prompt size with schema completeness. |
 | Path resolution optimization | Multi-key lookup with canonical name support | Improves tool definition path resolution performance. |
+| Skill hijacking prevention | Exact name matching and built-in command protection | Prevents accidental skill loading and reduces unnecessary processing. |
+| Multi-tier model selection | Prioritized candidate evaluation with strict/flexible resolution | Optimizes model resolution performance while maintaining accuracy. |
 
 Streaming performance depends heavily on:
 
@@ -585,6 +699,8 @@ Streaming performance depends heavily on:
 - How fast the forwarder translates provider events into `AgentServerMessage`.
 - Whether the client consumes the SSE stream without falling too far behind the backlog.
 - How effectively the MCP schema healing reduces retry loops through better parameter guidance.
+- How efficiently the skill hijacking prevention avoids unnecessary skill loading.
+- How effectively the multi-tier model selection minimizes resolution attempts.
 
 Concurrent tool execution is coordinated through pending execution and interaction state. Long-running tools such as shell streams should use background shell handling and await semantics to avoid blocking the main streaming loop.
 
@@ -598,6 +714,8 @@ Concurrent tool execution is coordinated through pending execution and interacti
 - [core_types.go:410-427](file://internal/backend/agent/core/types.go#L410-L427)
 - [mcp_schema_heal.go:104-144](file://internal/backend/forwarder/mcp_schema_heal.go#L104-L144)
 - [local_discovery.go:650-723](file://internal/backend/agent/prompt/local_discovery.go#L650-L723)
+- [engine.go:553-608](file://internal/backend/agent/prompt/engine.go#L553-L608)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
 
 ## Troubleshooting Guide
 Common issues and their likely locations:
@@ -617,6 +735,9 @@ Common issues and their likely locations:
 | MCP parameter validation errors | Missing or incorrect tool parameters. | [mcp_schema_heal.go:35-62](file://internal/backend/forwarder/mcp_schema_heal.go#L35-L62) |
 | MCP schema not found | Definition path resolution failed or file missing. | [mcp_schema_heal.go:64-102](file://internal/backend/forwarder/mcp_schema_heal.go#L64-L102), [local_discovery.go:659-697](file://internal/backend/agent/prompt/local_discovery.go#L659-L697) |
 | Excessive MCP schema size | Schema exceeds budget limits, triggering lazy loading. | [local_discovery.go:650-723](file://internal/backend/agent/prompt/local_discovery.go#L650-L723) |
+| Skill hijacking detected | Similar-named built-in command triggered custom skill. | [engine.go:553-608](file://internal/backend/agent/prompt/engine.go#L553-L608), [engine_test.go:651-690](file://internal/backend/agent/prompt/engine_test.go#L651-L690) |
+| Commit message uses wrong model | Model resolution chain failed or overrides not properly configured. | [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201), [service.go:2010-2022](file://internal/backend/forwarder/service.go#L2010-L2022) |
+| Explorer model override not persisting | Subagent override capture failed or storage issue. | [service.go:2025-2053](file://internal/backend/forwarder/service.go#L2025-L2053) |
 
 Debug logging is present throughout the forwarder and broker layers. When diagnosing Agent protocol problems, inspect:
 
@@ -627,6 +748,8 @@ Debug logging is present throughout the forwarder and broker layers. When diagno
 - Terminal event codes and messages.
 - MCP schema healing attempts and success rates.
 - Tool definition path resolution results.
+- Skill hijacking prevention logs.
+- Multi-tier model selection candidate evaluation.
 
 **Section sources**
 - [service.go:370-448](file://internal/backend/forwarder/service.go#L370-L448)
@@ -640,6 +763,10 @@ Debug logging is present throughout the forwarder and broker layers. When diagno
 - [engine.go:740-800](file://internal/backend/agent/prompt/engine.go#L740-L800)
 - [mcp_schema_heal.go:35-102](file://internal/backend/forwarder/mcp_schema_heal.go#L35-L102)
 - [local_discovery.go:659-723](file://internal/backend/agent/prompt/local_discovery.go#L659-L723)
+- [engine.go:553-608](file://internal/backend/agent/prompt/engine.go#L553-L608)
+- [engine_test.go:651-690](file://internal/backend/agent/prompt/engine_test.go#L651-L690)
+- [commit_message.go:156-201](file://internal/backend/forwarder/commit_message.go#L156-L201)
+- [service.go:2010-2053](file://internal/backend/forwarder/service.go#L2010-L2053)
 
 ## Conclusion
 cursor-byok's Agent protocol implementation provides a robust bridge between Cursor's native Agent wire format and upstream model providers. It preserves Cursor's tool calling, Skills, MCP, and multi-turn conversation semantics by:
@@ -652,6 +779,10 @@ cursor-byok's Agent protocol implementation provides a robust bridge between Cur
 - Publishing structured `AgentServerMessage` events through a buffered, cursor-aware stream broker.
 - Supporting heartbeats, cancellation, terminal errors, and cleanup to maintain stable long-lived Agent sessions.
 
+The enhanced slash command processing significantly improves reliability through intelligent skill hijacking prevention, ensuring that Cursor's built-in commands don't accidentally trigger custom skills while maintaining full compatibility with explicit skill invocations.
+
+The advanced multi-tier model selection system provides sophisticated model resolution for commit message generation and other secondary tasks, offering a prioritized chain of candidates with both live and persistent fallbacks, ensuring consistent model selection across different parts of the system.
+
 The enhanced MCP integration significantly improves reliability through intelligent schema discovery, automatic error recovery, and efficient path tracking. These improvements enable more robust tool execution with better parameter validation, reduced retry loops, and improved model guidance for complex MCP tool interactions.
 
-This architecture allows users to bring their own model APIs while keeping Cursor's full Agent experience intact, with enhanced MCP support providing better tool discovery, parameter validation, and error recovery capabilities.
+This architecture allows users to bring their own model APIs while keeping Cursor's full Agent experience intact, with enhanced MCP support, improved skill management, and sophisticated model selection providing better tool discovery, parameter validation, error recovery, and consistent model resolution capabilities.

@@ -3,7 +3,7 @@ schema_version: 1
 locale: en-US
 branch: enhance/optimize-stable-go-byok-v2
 nodes_managed: true
-exported_at: "2026-11-19T20:32:07Z"
+exported_at: "2026-11-19T21:32:13Z"
 modules:
     "":
         dir_name: Cursor BYOK Go v2 Desktop Application
@@ -44,7 +44,9 @@ modules:
         children: []
         depends_on: []
         related_to:
+            - path: cursor_tab_server
             - path: proto_and_generated
+            - path: scripts_and_tools
     cursor_tab_server:
         dir_name: Cursor Tab Proxy Server
         title: Cursor Tab Proxy Server
@@ -53,7 +55,8 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to: []
+        related_to:
+            - path: cursor_proxy_debugger
     frontend:
         dir_name: Cursor BYOK Electron-Style Desktop Frontend (Vue + Wails)
         title: Cursor BYOK Electron-Style Desktop Frontend (Vue + Wails)
@@ -64,8 +67,8 @@ modules:
         depends_on: []
         related_to: []
     prompts:
-        dir_name: Mode-Scoped Prompt & Tool Asset Loader
-        title: Mode-Scoped Prompt & Tool Asset Loader
+        dir_name: Static Prompt Templates & Mode-Scoped Tool Catalog
+        title: Static Prompt Templates & Mode-Scoped Tool Catalog
         scope:
             - prompt/
         source_files: []
@@ -92,4 +95,5 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to: []
+        related_to:
+            - path: cursor_proxy_debugger

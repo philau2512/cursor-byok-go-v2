@@ -1,0 +1,1 @@
+Loads per-mode prompt templates, system reminders, and tool catalogs from Go embed.FS assets, assembling mode-specific tool sets via JSON manifests with variant resolution.

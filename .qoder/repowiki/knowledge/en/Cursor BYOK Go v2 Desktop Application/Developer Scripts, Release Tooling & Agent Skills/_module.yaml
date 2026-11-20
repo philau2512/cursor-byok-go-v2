@@ -7,4 +7,5 @@ scope:
     - .github/
 source_files: []
 depends_on: []
-related_to: []
+related_to:
+    - path: cursor_proxy_debugger
