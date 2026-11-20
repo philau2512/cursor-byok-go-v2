@@ -19,6 +19,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
-    "GenerateImage"
+    "GenerateImage",
+    "SaveMemory",
+    "SearchMemory"
   ]
 }

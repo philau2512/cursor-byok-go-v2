@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func testModelAdapter(displayName string, sortValue int) ModelAdapterConfig {
 	return ModelAdapterConfig{
@@ -78,5 +81,69 @@ func TestNormalizeModelAdapterConfigsRejectsUnknownReasoningEffort(t *testing.T)
 
 	if _, err := NormalizeModelAdapterConfigs([]ModelAdapterConfig{adapter}); err == nil {
 		t.Fatal("NormalizeModelAdapterConfigs should reject an unknown reasoning effort")
+	}
+}
+
+func TestNormalizeConfigKeepsCommitMessageModelFields(t *testing.T) {
+	input := DefaultConfig()
+	input.CommitMessageModel = "  gemini-flash  "
+	input.LastExplorerModelHash = " hash-123 "
+
+	normalized, err := NormalizeConfig(input)
+	if err != nil {
+		t.Fatalf("NormalizeConfig: %v", err)
+	}
+	if normalized.CommitMessageModel != "gemini-flash" {
+		t.Fatalf("CommitMessageModel = %q, want trimmed value", normalized.CommitMessageModel)
+	}
+	if normalized.LastExplorerModelHash != "hash-123" {
+		t.Fatalf("LastExplorerModelHash = %q, want trimmed value", normalized.LastExplorerModelHash)
+	}
+
+	blank, err := NormalizeConfig(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NormalizeConfig default: %v", err)
+	}
+	if !strings.EqualFold(blank.CommitMessageModel, "") || !strings.EqualFold(blank.LastExplorerModelHash, "") {
+		t.Fatal("new fields must default to empty")
+	}
+}
+
+func TestNormalizeConfigMemoryDefaults(t *testing.T) {
+	disabled := false
+	input := DefaultConfig()
+	input.MemoryEnabled = &disabled
+	input.MemoryAutoCapture = nil
+	input.MemoryOverviewMaxBytes = 100
+	normalized, err := NormalizeConfig(input)
+	if err != nil {
+		t.Fatalf("NormalizeConfig: %v", err)
+	}
+	if normalized.MemoryEnabled == nil || *normalized.MemoryEnabled {
+		t.Fatal("explicit false must survive normalize")
+	}
+	if normalized.MemoryAutoCapture != nil {
+		t.Fatal("nil flag must stay nil (default-true semantics)")
+	}
+	if normalized.MemoryOverviewMaxBytes != 512 {
+		t.Fatalf("low value must clamp to 512, got %d", normalized.MemoryOverviewMaxBytes)
+	}
+
+	high := DefaultConfig()
+	high.MemoryOverviewMaxBytes = 999999
+	highNormalized, err := NormalizeConfig(high)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if highNormalized.MemoryOverviewMaxBytes != 16384 {
+		t.Fatalf("high value must clamp to 16384, got %d", highNormalized.MemoryOverviewMaxBytes)
+	}
+
+	blank, err := NormalizeConfig(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blank.MemoryOverviewMaxBytes != 4096 {
+		t.Fatalf("unset must default to 4096, got %d", blank.MemoryOverviewMaxBytes)
 	}
 }

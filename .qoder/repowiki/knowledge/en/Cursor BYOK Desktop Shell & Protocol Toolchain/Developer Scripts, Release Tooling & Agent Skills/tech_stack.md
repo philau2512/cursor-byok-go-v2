@@ -1,0 +1,1 @@
+Go CLIs using only stdlib plus `gopkg.in/yaml.v3`; a vanilla ES module injected into Cursor's Electron workbench; PowerShell for Windows-side patch installation.

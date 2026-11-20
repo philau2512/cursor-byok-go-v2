@@ -61,6 +61,11 @@ func RulesRootPath() string {
 	return filepath.Join(RootDir(), "rules")
 }
 
+// MemoriesRootPath trả về gốc lưu project memory (markdown per-entry).
+func MemoriesRootPath() string {
+	return filepath.Join(RootDir(), "memories")
+}
+
 // LogsRootPath 返回统一日志根目录路径。
 func LogsRootPath() string {
 	return filepath.Join(RootDir(), "logs")

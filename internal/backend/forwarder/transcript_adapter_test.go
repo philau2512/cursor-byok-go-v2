@@ -278,6 +278,72 @@ func TestAgentTranscriptsFolderRecoveredFromLegacyRequestContext(t *testing.T) {
 	}
 }
 
+func TestConversationFileStoreThrottlesTranscriptSyncDuringActiveTurn(t *testing.T) {
+	historyRoot := filepath.Join(t.TempDir(), "history")
+	transcriptsFolder := filepath.Join(t.TempDir(), "agent-transcripts")
+	store := NewConversationFileStore(historyRoot)
+	conversation := transcriptTestConversation(nil)
+	conversation.AgentTranscriptsFolder = transcriptsFolder
+
+	// Turn 1 completes
+	_, err := store.SaveConversationWithEntries(conversation.ConversationID, conversation, []HistoryEntry{
+		transcriptTestUserMessageEntry(t, 1, "request-1", "start turn 1"),
+		newAssistantTextEntry(1, "request-1", "done turn 1", "", ""),
+		newMetadataEntry(1, "request-1", "turn_completed", nil),
+	})
+	if err != nil {
+		t.Fatalf("turn 1 append error = %v", err)
+	}
+	store.WaitTranscriptSync()
+
+	path := filepath.Join(transcriptsFolder, conversation.ConversationID, conversation.ConversationID+".jsonl")
+	info1, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("transcript stat error = %v", err)
+	}
+	initialModTime := info1.ModTime()
+
+	// Turn 2 starts with intermediate non-terminal events
+	_, _, err = store.AppendEntriesWithUpdate(conversation.ConversationID, []HistoryEntry{
+		transcriptTestUserMessageEntry(t, 2, "request-2", "start turn 2"),
+		newAssistantTextEntry(2, "request-2", "working...", "", ""),
+	}, func(c *ConversationFile) error {
+		c.CurrentLoopStatus = "running"
+		c.CurrentTurnSeq = 2
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("turn 2 running append error = %v", err)
+	}
+	store.WaitTranscriptSync()
+
+	// The active running update should be throttled because lastTranscriptSync was updated on turn 1 completion
+	info2, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("transcript stat 2 error = %v", err)
+	}
+	if info2.ModTime().After(initialModTime) {
+		t.Fatalf("active intermediate append was not throttled; modTime changed from %v to %v", initialModTime, info2.ModTime())
+	}
+
+	// Terminal event arrives for turn 2 -> must sync immediately
+	_, _, err = store.AppendEntries(conversation.ConversationID, []HistoryEntry{
+		newMetadataEntry(2, "request-2", "turn_completed", nil),
+	})
+	if err != nil {
+		t.Fatalf("turn 2 terminal append error = %v", err)
+	}
+	store.WaitTranscriptSync()
+
+	info3, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("transcript stat 3 error = %v", err)
+	}
+	if !info3.ModTime().After(initialModTime) {
+		t.Fatalf("terminal event did not trigger immediate transcript sync")
+	}
+}
+
 func transcriptTestConversation(entries []HistoryEntry) *ConversationFile {
 	conversation := &ConversationFile{
 		ConversationID:     "conversation-1",

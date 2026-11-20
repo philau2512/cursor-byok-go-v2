@@ -395,7 +395,7 @@ func buildGenerateImageErrorResult(message string) (*agentv1.GenerateImageResult
 
 func isLocalStateTool(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "TodoWrite":
+	case "TodoWrite", "SaveMemory", "SearchMemory":
 		return true
 	default:
 		return false
@@ -406,6 +406,10 @@ func (service *Service) handleLocalStateToolInvocation(stream *ActiveStream, inv
 	switch strings.TrimSpace(invocation.ToolName) {
 	case "TodoWrite":
 		return service.handleTodoWriteToolInvocation(stream, invocation)
+	case "SaveMemory":
+		return service.handleSaveMemoryToolInvocation(stream, invocation)
+	case "SearchMemory":
+		return service.handleSearchMemoryToolInvocation(stream, invocation)
 	default:
 		return fmt.Errorf("unsupported local state tool: %s", invocation.ToolName)
 	}

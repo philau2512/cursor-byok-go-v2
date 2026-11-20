@@ -22,7 +22,10 @@ const (
 	commitMessageSingleDiffLimit          = 40_000
 	commitMessagePreviousCommitLimit      = 12
 	commitMessageExplicitContextLimit     = 20_000
-	commitMessageMaxOutputTokens          = 512
+	commitMessageBaseOutputTokens         = 512
+	commitMessagePerFileOutputTokens      = 40
+	commitMessageMaxOutputTokens          = 1_536
+	commitMessageManifestMaxFiles         = 200
 	commitMessageGeneratedRequestIDPrefix = "commit-message-"
 )
 
@@ -51,12 +54,12 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 	if service.provider == nil {
 		return nil, commitMessageConnectError(recorder, connect.CodeInternal, fmt.Errorf("provider gateway is not initialized"))
 	}
-	messages, err := buildCommitMessagePrompt(req.Msg, diffs)
+	messages, changedFileCount, err := buildCommitMessagePrompt(req.Msg, diffs)
 	if err != nil {
 		return nil, commitMessageConnectError(recorder, connect.CodeInternal, err)
 	}
 	modelCallID := requestID + "-model"
-	modelID, modelSource, lastAgentModelHash := service.resolveCommitMessageModelID(ctx)
+	modelID, modelSource, modelSourceValue := service.resolveCommitMessageModelID(ctx)
 	accumulated := ""
 	artifactPaths := &modeladapter.LLMArtifactPaths{}
 	err = service.provider.StartStream(ctx, ProviderRequest{
@@ -67,8 +70,8 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 		Mode:           agentv1.AgentMode_AGENT_MODE_AGENT,
 		Messages:       messages,
 		Tools:          nil,
-		MaxTokens:      commitMessageMaxOutputTokens,
-		CompileSummary: fmt.Sprintf("generate commit message diffs=%d previous_commits=%d model_source=%s last_agent_model_hash=%s", len(diffs), len(req.Msg.GetPreviousCommitMessages()), modelSource, lastAgentModelHash),
+		MaxTokens:      commitMessageOutputBudget(changedFileCount),
+		CompileSummary: fmt.Sprintf("generate commit message diffs=%d previous_commits=%d model_source=%s model_source_value=%s", len(diffs), len(req.Msg.GetPreviousCommitMessages()), modelSource, modelSourceValue),
 		Observer:       recorder,
 		ArtifactPaths:  artifactPaths,
 	}, func(event modeladapter.ModelEvent) error {
@@ -117,13 +120,13 @@ func (service *Service) WriteGitCommitMessage(ctx context.Context, req *connect.
 	}), nil
 }
 
-func buildCommitMessagePrompt(req *aiserverv1.WriteGitCommitMessageRequest, diffs []string) ([]modeladapter.Message, error) {
+func buildCommitMessagePrompt(req *aiserverv1.WriteGitCommitMessageRequest, diffs []string) ([]modeladapter.Message, int, error) {
 	system, err := promptassets.ReadCommitPrompt()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if strings.TrimSpace(system) == "" {
-		return nil, fmt.Errorf("commit prompt asset is empty")
+		return nil, 0, fmt.Errorf("commit prompt asset is empty")
 	}
 	sections := []string{"Generate a Git commit message for the following changes."}
 	previous := truncateCommitMessagePreviousCommits(req.GetPreviousCommitMessages(), commitMessagePreviousCommitLimit)
@@ -131,9 +134,15 @@ func buildCommitMessagePrompt(req *aiserverv1.WriteGitCommitMessageRequest, diff
 		sections = append(sections, "Recent commit messages:\n"+strings.Join(previous, "\n"))
 	}
 	if contextJSON, err := marshalCommitMessageExplicitContext(req.GetExplicitContext()); err != nil {
-		return nil, err
+		return nil, 0, err
 	} else if contextJSON != "" {
 		sections = append(sections, "Explicit context:\n"+contextJSON)
+	}
+	// Manifest tính từ diffs GỐC (chưa truncate) để các file bị cắt khỏi budget vẫn
+	// hiện diện trong scope — bullets của model có neo thực tế thay vì suy đoán.
+	changedFiles := summarizeCommitMessageFiles(req.GetDiffs())
+	if manifest := formatCommitMessageManifest(changedFiles); manifest != "" {
+		sections = append(sections, manifest)
 	}
 	diffSections := make([]string, 0, len(diffs))
 	for index, diff := range diffs {
@@ -143,7 +152,100 @@ func buildCommitMessagePrompt(req *aiserverv1.WriteGitCommitMessageRequest, diff
 	return []modeladapter.Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: strings.Join(sections, "\n\n")},
-	}, nil
+	}, len(changedFiles), nil
+}
+
+// commitMessageOutputBudget nới dần output budget theo số file thay đổi, đủ cho
+// body 3-8 bullets kể cả khi model tiêu token cho reasoning; có trần cứng.
+func commitMessageOutputBudget(changedFileCount int) int {
+	if changedFileCount < 0 {
+		changedFileCount = 0
+	}
+	budget := commitMessageBaseOutputTokens + changedFileCount*commitMessagePerFileOutputTokens
+	if budget > commitMessageMaxOutputTokens {
+		return commitMessageMaxOutputTokens
+	}
+	return budget
+}
+
+type commitMessageFileChange struct {
+	Path      string
+	Additions int
+	Deletions int
+}
+
+// summarizeCommitMessageFiles quét header "diff --git a/... b/..." và đếm dòng +/-
+// của từng file trên toàn bộ diffs (kể cả diff sẽ bị truncate sau này).
+func summarizeCommitMessageFiles(diffs []string) []commitMessageFileChange {
+	var files []commitMessageFileChange
+	indexes := make(map[string]int)
+	current := -1
+	for _, diff := range diffs {
+		for _, line := range strings.Split(diff, "\n") {
+			if path, ok := commitMessageDiffHeaderPath(line); ok {
+				if idx, exists := indexes[path]; exists {
+					current = idx
+					continue
+				}
+				indexes[path] = len(files)
+				files = append(files, commitMessageFileChange{Path: path})
+				current = len(files) - 1
+				continue
+			}
+			if current < 0 {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+			case strings.HasPrefix(line, "+"):
+				files[current].Additions++
+			case strings.HasPrefix(line, "-"):
+				files[current].Deletions++
+			}
+		}
+	}
+	return files
+}
+
+// commitMessageDiffHeaderPath trích phía "b/" của header diff --git.
+// Best-effort với path chứa khoảng trắng (git quote những path đó); manifest
+// chỉ dùng để mô tả scope nên tên hiển thị không cần chính xác tuyệt đối.
+func commitMessageDiffHeaderPath(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "diff --git ") {
+		return "", false
+	}
+	parts := strings.Fields(strings.TrimPrefix(trimmed, "diff --git "))
+	if len(parts) == 0 {
+		return "", false
+	}
+	path := parts[len(parts)-1]
+	path = strings.TrimPrefix(path, "b/")
+	if path == "" {
+		return "", false
+	}
+	return path, true
+}
+
+func formatCommitMessageManifest(files []commitMessageFileChange) string {
+	if len(files) == 0 {
+		return ""
+	}
+	shown := files
+	omitted := 0
+	if len(files) > commitMessageManifestMaxFiles {
+		omitted = len(files) - commitMessageManifestMaxFiles
+		shown = files[:commitMessageManifestMaxFiles]
+	}
+	lines := make([]string, 0, len(shown)+2)
+	lines = append(lines, fmt.Sprintf("Files changed (%d):", len(files)))
+	for _, file := range shown {
+		lines = append(lines, fmt.Sprintf("- %s (+%d/-%d)", file.Path, file.Additions, file.Deletions))
+	}
+	if omitted > 0 {
+		lines = append(lines, fmt.Sprintf("- ... and %d more files", omitted))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (service *Service) commitMessageHistoryRoot() string {
@@ -153,22 +255,51 @@ func (service *Service) commitMessageHistoryRoot() string {
 	return strings.TrimSpace(service.store.HistoryDir())
 }
 
+// resolveCommitMessageModelID chọn model cho tác vụ phụ (commit message, optimize prompt)
+// theo chain ưu tiên:
+//  1. commitMessageModel       — user cấu hình tường minh trong config (model ID bất kỳ)
+//  2. explorer_override_live   — snapshot subagent_model_overrides mới nhất từ client,
+//     resolve đúng chain mà Task subagent routing dùng (explore -> generalPurpose)
+//  3. explorer_override        — lastExplorerModelHash đã persist (rơi lại khi app vừa
+//     restart, chưa có run_request/prewarm nào mang overrides)
+//  4. last_agent_model_hash    — model chat chính gần nhất (hành vi cũ)
+//  5. default_fallback         — để resolver tự chọn channel mặc định
+//
+// Ba giá trị trả về: channel ID đã validate, tên nguồn, giá trị gốc của nguồn.
 func (service *Service) resolveCommitMessageModelID(ctx context.Context) (string, string, string) {
 	if service == nil || service.modelMemory == nil || service.resolver == nil {
 		return "", "default_fallback", ""
 	}
-	hash := strings.TrimSpace(service.modelMemory.LastAgentModelHash())
-	if hash == "" {
-		return "", "default_fallback", ""
+	candidates := []struct {
+		source string
+		value  string
+		// strict=true yêu cầu channel resolve ra phải đúng ID đã lưu (hash bền vững);
+		// giá trị config tường minh được phép là model ID resolve sang channel bất kỳ.
+		strict bool
+	}{
+		{source: "commit_message_config", value: strings.TrimSpace(service.modelMemory.CommitMessageModel()), strict: false},
+		{source: "explorer_override_live", value: service.liveExplorerModelID(), strict: false},
+		{source: "explorer_override", value: strings.TrimSpace(service.modelMemory.LastExplorerModelHash()), strict: true},
+		{source: "last_agent_model_hash", value: strings.TrimSpace(service.modelMemory.LastAgentModelHash()), strict: true},
 	}
-	channel, err := service.resolver.SelectChannelForModel(ctx, hash)
-	if err != nil || channel == nil || strings.TrimSpace(channel.ID) != hash {
-		if err != nil {
-			log.Printf("forwarder commit message ignored invalid last agent model hash=%s error=%v", hash, err)
+	for _, candidate := range candidates {
+		if candidate.value == "" {
+			continue
 		}
-		return "", "default_fallback", hash
+		channel, err := service.resolver.SelectChannelForModel(ctx, candidate.value)
+		if err != nil || channel == nil || strings.TrimSpace(channel.ID) == "" {
+			if err != nil {
+				log.Printf("forwarder commit message ignored candidate source=%s value=%s error=%v", candidate.source, candidate.value, err)
+			}
+			continue
+		}
+		if candidate.strict && strings.TrimSpace(channel.ID) != candidate.value {
+			log.Printf("forwarder commit message ignored stale candidate source=%s value=%s resolved_channel=%s", candidate.source, candidate.value, strings.TrimSpace(channel.ID))
+			continue
+		}
+		return strings.TrimSpace(channel.ID), candidate.source, candidate.value
 	}
-	return hash, "last_agent_model_hash", hash
+	return "", "default_fallback", ""
 }
 
 func recordCommitMessageIncomingRequest(recorder *commitMessageLogRecorder, requestID string, request *aiserverv1.WriteGitCommitMessageRequest) error {

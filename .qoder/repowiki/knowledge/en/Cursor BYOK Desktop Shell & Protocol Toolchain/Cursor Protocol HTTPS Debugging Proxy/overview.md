@@ -1,0 +1,1 @@
+Standalone local HTTPS MITM proxy that captures and decodes Cursor's BidiAppend, RunSSE, and Fork Chat gRPC-Connect traffic for a web-based debugging UI.

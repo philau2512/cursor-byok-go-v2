@@ -1,0 +1,1 @@
+Go standard library `net/http` for the proxy; `gopkg.in/yaml.v3` for config parsing; `crypto/sha256` + `math/big` for the custom `x-cursor-checksum` header generation; built with `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` and distributed via a `scratch` Docker image.

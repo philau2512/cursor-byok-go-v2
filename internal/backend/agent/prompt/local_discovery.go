@@ -633,7 +633,8 @@ func mergeLocalAgentRules(requestContext *agentv1.RequestContext) {
 }
 
 type mcpToolFilePayload struct {
-	Description string `json:"description"`
+	Description string          `json:"description"`
+	Arguments   json.RawMessage `json:"arguments"`
 }
 
 var (
@@ -644,13 +645,24 @@ var (
 type cachedMcpDesc struct {
 	modTime     time.Time
 	description string
+	inputSchema string
 }
 
-func readMCPToolFullDescription(defPath string) string {
+const (
+	// mcpInlineSchemaBudgetBytes là ngân sách tối đa cho input schema compact inline vào prompt mỗi tool.
+	// Vượt ngân sách thì giữ lazy load qua definition_path.
+	mcpInlineSchemaBudgetBytes = 1200
+	// mcpInlineSchemaSlimBudgetBytes là ngân sách cho bản rút gọn chỉ còn type + required.
+	mcpInlineSchemaSlimBudgetBytes = 600
+)
+
+// readMCPToolDefinition đọc file definition của MCP tool, trả về description đầy đủ
+// và input schema compact (tên param + type + enum + required, không kèm mô tả từng param).
+func readMCPToolDefinition(defPath string) (string, string) {
 	cleanPath := filepath.Clean(defPath)
 	info, err := os.Stat(cleanPath)
 	if err != nil || info.IsDir() {
-		return ""
+		return "", ""
 	}
 
 	mcpDescCacheMu.RLock()
@@ -658,31 +670,92 @@ func readMCPToolFullDescription(defPath string) string {
 	mcpDescCacheMu.RUnlock()
 
 	if ok && cached.modTime.Equal(info.ModTime()) {
-		return cached.description
+		return cached.description, cached.inputSchema
 	}
 
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 
 	var payload mcpToolFilePayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return ""
+		return "", ""
 	}
 
 	desc := strings.TrimSpace(payload.Description)
+	schema := compactMCPToolSchema(payload.Arguments)
 	mcpDescCacheMu.Lock()
 	mcpDescCache[cleanPath] = cachedMcpDesc{
 		modTime:     info.ModTime(),
 		description: desc,
+		inputSchema: schema,
 	}
 	mcpDescCacheMu.Unlock()
 
-	return desc
+	return desc, schema
 }
 
-// hydrateLocalMCPDescriptors 从 definition_path 文件或 fallback 规则中自动补齐 MCP 工具的完整 description（保持参数 lazy load，不内联 param schema）。
+// compactMCPToolSchema rút gọn JSON schema (field "arguments" của definition file) thành bản
+// chỉ giữ type/enum/required/properties/items để model biết tham số bắt buộc mà không tốn token.
+// Trả về "" khi vượt ngân sách — caller giữ cơ chế lazy load qua definition_path.
+func compactMCPToolSchema(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
+		return ""
+	}
+	if full, err := json.Marshal(compactSchemaNode(doc, true)); err == nil {
+		encoded := compactPromptJSON(full)
+		if len(encoded) <= mcpInlineSchemaBudgetBytes {
+			return encoded
+		}
+	}
+	if slim, err := json.Marshal(compactSchemaNode(doc, false)); err == nil {
+		encoded := compactPromptJSON(slim)
+		if len(encoded) <= mcpInlineSchemaSlimBudgetBytes {
+			return encoded
+		}
+	}
+	return ""
+}
+
+// compactSchemaNode giữ lại các khóa cấu trúc cần thiết, bỏ description/default và các metadata dài dòng.
+// keepEnums=false sẽ cắt thêm enum để giảm kích thước khi bản đầy đủ vượt ngân sách.
+func compactSchemaNode(node map[string]any, keepEnums bool) map[string]any {
+	out := make(map[string]any, 4)
+	if valueType, ok := node["type"].(string); ok && strings.TrimSpace(valueType) != "" {
+		out["type"] = valueType
+	}
+	if keepEnums {
+		if enumValue, ok := node["enum"]; ok {
+			out["enum"] = enumValue
+		}
+	}
+	if required, ok := node["required"]; ok {
+		out["required"] = required
+	}
+	if properties, ok := node["properties"].(map[string]any); ok {
+		compacted := make(map[string]any, len(properties))
+		for name, value := range properties {
+			child, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			compacted[name] = compactSchemaNode(child, keepEnums)
+		}
+		out["properties"] = compacted
+	}
+	if items, ok := node["items"].(map[string]any); ok {
+		out["items"] = compactSchemaNode(items, keepEnums)
+	}
+	return out
+}
+
+// hydrateLocalMCPDescriptors 从 definition_path 文件或 fallback 规则中自动补齐 MCP 工具的完整 description，
+// 并内联 compact input schema（参数名/类型/required）；schema 超预算时保持 lazy load 经 definition_path。
 func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 	if requestContext == nil {
 		return
@@ -705,22 +778,26 @@ func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 			if tool == nil {
 				continue
 			}
-			if strings.TrimSpace(tool.GetDescription()) != "" {
-				continue
-			}
-
 			defPath := strings.TrimSpace(tool.GetDefinitionPath())
 			if defPath == "" && folderPath != "" {
 				defPath = filepath.Join(folderPath, "tools", tool.GetToolName()+".json")
 			}
+			var descText, schemaText string
 			if defPath != "" {
-				if descText := readMCPToolFullDescription(defPath); descText != "" {
+				descText, schemaText = readMCPToolDefinition(defPath)
+			}
+
+			needsDescription := strings.TrimSpace(tool.GetDescription()) == ""
+			needsSchema := strings.TrimSpace(tool.GetInputSchemaJson()) == "" && tool.GetInputSchema() == nil
+			if needsDescription {
+				if descText != "" {
 					tool.Description = proto.String(descText)
-					continue
+				} else if fb := getFallbackMcpToolDescription(serverID, tool.GetToolName()); fb != "" {
+					tool.Description = proto.String(fb)
 				}
 			}
-			if fb := getFallbackMcpToolDescription(serverID, tool.GetToolName()); fb != "" {
-				tool.Description = proto.String(fb)
+			if needsSchema && schemaText != "" {
+				tool.InputSchemaJson = proto.String(schemaText)
 			}
 		}
 	}

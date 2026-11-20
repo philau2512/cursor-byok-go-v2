@@ -7,13 +7,13 @@ import (
 
 func TestDecodeGrepToolArgsWindowsOptimization(t *testing.T) {
 	tests := []struct {
-		name         string
-		argsJSON     []byte
-		wantPattern  string
-		wantGlob     *string
-		wantPath     *string
-		wantOutMode  *string
-		wantCaseIns  *bool
+		name        string
+		argsJSON    []byte
+		wantPattern string
+		wantGlob    *string
+		wantPath    *string
+		wantOutMode *string
+		wantCaseIns *bool
 	}{
 		{
 			name: "normalizes backslashes in glob to forward slashes",

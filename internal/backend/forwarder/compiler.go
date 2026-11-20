@@ -7,6 +7,7 @@ import (
 
 	"cursor/gen/agentv1"
 	modeladapter "cursor/internal/backend/agent/model"
+	"cursor/internal/memory"
 	promptassets "cursor/prompt"
 )
 
@@ -21,6 +22,9 @@ type DefaultPromptCompiler struct {
 	reminders ReminderInjector
 	rules     *UserRuleStore
 	blobs     contentBlobReader
+	// memoryStore + memoryConfig cho overview project memory (compiler_memory.go).
+	memoryStore  *memory.Store
+	memoryConfig projectMemoryConfig
 }
 
 // NewPromptCompiler 创建默认 prompt 编译器。
@@ -138,6 +142,12 @@ func (compiler *DefaultPromptCompiler) DerivePromptContexts(conversation *Conver
 	candidates = append(candidates, promptReminders.PromptContexts...)
 	for index, message := range promptReminders.TailMessages {
 		candidates = append(candidates, newPromptContextMessage(fmt.Sprintf("tail_reminder/%d", index), message, true))
+	}
+	if memoryContext, ok := compiler.buildMemoryOverviewPromptContext(conversation); ok {
+		candidates = append(candidates, memoryContext)
+	}
+	if nudgeContext, ok := compiler.buildMemoryNudgePromptContext(conversation, latestUserText); ok {
+		candidates = append(candidates, nudgeContext)
 	}
 	for index := range candidates {
 		candidates[index].Persist = true

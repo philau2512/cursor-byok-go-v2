@@ -80,6 +80,14 @@ func (service *Service) bootstrapRuntimeConversation(intent InboundIntent) (*Con
 	if strings.TrimSpace(intent.SubagentTypeName) != "" {
 		conversation.SubagentTypeName = strings.TrimSpace(intent.SubagentTypeName)
 	}
+	// Workspace paths đổi theo window làm việc của client; giữ slug scope cho
+	// project memory (root đầu tiên). Chỉ ghi khi client báo lên danh sách mới.
+	if workspacePaths := compactWorkspacePaths(
+		intent.RequestContext.GetEnv().GetWorkspacePaths(),
+		intent.RequestContext.GetEnv().GetProjectFolder(),
+	); len(workspacePaths) > 0 {
+		conversation.WorkspacePaths = workspacePaths
+	}
 	if contextWindowTokens > 0 {
 		conversation.TokenDetailsMaxTokens = contextWindowTokens
 	} else if conversation.TokenDetailsMaxTokens == 0 {

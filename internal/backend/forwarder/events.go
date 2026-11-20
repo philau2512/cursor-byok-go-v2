@@ -353,6 +353,10 @@ func buildStartedToolCall(invocation runtimecore.ToolInvocation) *agentv1.ToolCa
 				UpdateTodosToolCall: &agentv1.UpdateTodosToolCall{Args: args},
 			},
 		}
+	case "SaveMemory", "SearchMemory":
+		// Started card: dựng theo format MCP (server "byok-memory") để client
+		// hiển thị như call MCP; chưa có result tại thời điểm started.
+		return buildMemoryToolCall(invocation, "")
 	case "ReadTodos":
 		args, _ := decodeReadTodosArgsJSON(invocation.ArgsJSON)
 		return &agentv1.ToolCall{

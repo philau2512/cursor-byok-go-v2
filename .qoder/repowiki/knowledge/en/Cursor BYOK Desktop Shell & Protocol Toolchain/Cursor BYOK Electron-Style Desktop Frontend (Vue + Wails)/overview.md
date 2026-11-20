@@ -1,0 +1,1 @@
+Vue 3 desktop UI for the Cursor BYOK Go v2 app, built with Vite and Wails, providing proxy configuration, model adapter management, metrics display, and update prompts.

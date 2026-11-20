@@ -1,0 +1,1 @@
+Go HTTP proxy that forwards Cursor IDE's gRPC-Web tab-completion requests to Cursor's upstream API, injecting a Bearer token and a custom x-cursor-checksum header.

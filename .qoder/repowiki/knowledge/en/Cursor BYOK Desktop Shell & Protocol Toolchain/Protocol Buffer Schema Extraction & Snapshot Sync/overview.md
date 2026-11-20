@@ -1,0 +1,1 @@
+Extracts protobuf message, enum and service definitions from Cursor's bundled JavaScript extensions and keeps canonical .proto snapshots in sync with the upstream runtime.

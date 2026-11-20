@@ -1,0 +1,1 @@
+Go `embed.FS` for compile-time bundling of `.md`/`.txt`/`.json` assets; JSON-driven tool catalog with a custom `UnmarshalJSON` on `modeManifestTool` that accepts both plain strings and `{name, variant}` objects to support `<tool>.<variant>` keys resolved against the `variants` map in `tools.json`.

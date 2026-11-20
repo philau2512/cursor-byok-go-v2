@@ -1,0 +1,3 @@
+- Cross-platform build targets are declared in `Taskfile.yml` and delegated to per-OS included taskfiles under `build/{windows,darwin,linux}/`.
+- Static assets (frontend dist, icons, prompts) are embedded into the Go binary via `//go:embed` directives rather than read from disk at runtime.
+- Release artifacts follow a `{base}-{version}-{os}-{arch}` naming scheme produced by the release tasks and validated by `release:verify:assets`.

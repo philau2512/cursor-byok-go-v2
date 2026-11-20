@@ -148,3 +148,17 @@ history/
 - 运行时渠道唯一 ID 不再由 `modelID` 决定
 - 当前唯一 ID 是 `url + modelID + key + name` 的短 `SHA-256` hash（前 16 个十六进制字符）
 - `modelID` 仅表示 provider model
+
+## 项目记忆（Project Memory）
+
+本地模式的跨会话工作区记忆（方案：`plans/20261120-byok-project-memory/`）。
+
+- **存储**：`~/.cursor-local-assistant-v2/memories/projects/<workspace-slug>/<category>/<title-slug>.md`，每条记忆一个带 YAML frontmatter（`title, category, keywords, usage_scenario, origin, created_at, updated_at`）的 markdown 文件；用户可直接编辑/删除，store 通过目录指纹感知外部修改。
+- **三条数据通路**：
+  1. **概览注入**（`compiler_memory.go`）：`category → titles [keywords]` 树经 `prompt_context`（source `project_memories`）发布，仅在内容相对上次持久化版本变化时发出，append-only，不破坏前缀缓存。
+  1b. **Memory nudge**（同文件）：当 user message 命中 directive/correction 信号（词表 `memoryNudgeMarkers`，越英双语），经 `prompt_context`（source `memory_nudge`）发一条单行提醒模型在本 turn 结束前考虑 `SaveMemory`；每条命中 turn 发一次（turn 内去重由既有 source+hash filter 保证），受 `memoryEnabled` kill-switch 控制。
+  2. **工具**（`memory_tools.go`）：`SaveMemory` / `SearchMemory` 服务端执行（local-state，不经过客户端回环），含密钥拦截、拒绝模型伪造 `origin=auto`、每 run 30 次保存限流。
+  3. **压缩自动沉淀**（`compaction_memory_capture.go`）：compaction 后用确定性解析器把 `Primary Target`、`user preferences & directives`、`HARD CONSTRAINTS`、`Rejected approaches & dead ends` 提炼为 `origin=auto` 条目（上限 8、内容去重、跳过 `[Unobserved]/[Unverified]`）。
+- **配置键**（热加载）：`memoryEnabled`（默认开）、`memoryAutoCapture`（默认开）、`memoryOverviewMaxBytes`（默认 4096，区间 512–16384）。关闭 `memoryEnabled` 同时停用三条通路。
+- **origin 语义**：`user`=用户要求记住；`model`=模型主动保存；`auto`=系统从压缩摘要提取。所有文件均可按 origin 审计。
+- **人工验证**：见 `scripts/memory-verify.md`。

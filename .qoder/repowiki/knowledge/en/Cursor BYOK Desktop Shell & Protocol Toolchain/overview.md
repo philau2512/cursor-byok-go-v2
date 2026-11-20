@@ -1,0 +1,1 @@
+Go v2 Wails desktop shell that embeds a Vue frontend and wires Cursor protocol proxies, prompt assets, protobuf snapshots, and cross-platform release tooling behind a single `main.go` entry point.

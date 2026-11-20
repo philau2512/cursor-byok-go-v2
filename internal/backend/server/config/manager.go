@@ -106,6 +106,71 @@ func (manager *Manager) SaveLastAgentModelHash(ctx context.Context, value string
 	return err
 }
 
+// CommitMessageModel trả về model ID người dùng cấu hình tường minh cho commit message;
+// rỗng hoặc "auto" nghĩa là để chain tự động quyết định.
+func (manager *Manager) CommitMessageModel() string {
+	if manager == nil {
+		return ""
+	}
+	value := strings.TrimSpace(manager.Current().CommitMessageModel)
+	if strings.EqualFold(value, "auto") {
+		return ""
+	}
+	return value
+}
+
+func (manager *Manager) LastExplorerModelHash() string {
+	if manager == nil {
+		return ""
+	}
+	return strings.TrimSpace(manager.Current().LastExplorerModelHash)
+}
+
+// MemoryEnabled bật/tắt toàn bộ project memory; nil (chưa cấu hình) = bật.
+func (manager *Manager) MemoryEnabled() bool {
+	if manager == nil {
+		return true
+	}
+	return memoryFlagDefaultTrue(manager.Current().MemoryEnabled)
+}
+
+// MemoryAutoCapture bật/tắt trích memory tự động từ compaction; nil = bật.
+func (manager *Manager) MemoryAutoCapture() bool {
+	if manager == nil {
+		return true
+	}
+	return memoryFlagDefaultTrue(manager.Current().MemoryAutoCapture)
+}
+
+// MemoryOverviewMaxBytes trả ngân sách byte cho overview block (đã clamp).
+func (manager *Manager) MemoryOverviewMaxBytes() int {
+	if manager == nil {
+		return memoryOverviewDefaultBytes
+	}
+	return normalizeMemoryOverviewMaxBytes(manager.Current().MemoryOverviewMaxBytes)
+}
+
+func memoryFlagDefaultTrue(value *bool) bool {
+	if value == nil {
+		return true
+	}
+	return *value
+}
+
+func (manager *Manager) SaveLastExplorerModelHash(ctx context.Context, value string) error {
+	if manager == nil {
+		return fmt.Errorf("config manager is not initialized")
+	}
+	normalizedValue := strings.TrimSpace(value)
+	current := manager.Current()
+	if strings.TrimSpace(current.LastExplorerModelHash) == normalizedValue {
+		return nil
+	}
+	current.LastExplorerModelHash = normalizedValue
+	_, err := manager.Save(ctx, current)
+	return err
+}
+
 func (manager *Manager) ProviderStreamIdleTimeout(ctx context.Context) time.Duration {
 	if manager == nil {
 		return time.Duration(DefaultProviderStreamIdleTimeoutSeconds) * time.Second

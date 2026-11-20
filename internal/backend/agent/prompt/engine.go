@@ -20,13 +20,13 @@ import (
 const todoSectionReminderMessage = "<system_reminder>\nYou are currently under the todo section, be sure to track tasks and do not forget to update.\n</system_reminder>"
 
 type cachedBaselineToolsEntry struct {
-	tools          []json.RawMessage
-	toolNames      []string
+	tools           []json.RawMessage
+	toolNames       []string
 	hiddenToolNames []string
 }
 
 var (
-	cachedBaselineTools = make(map[promptassets.Mode]cachedBaselineToolsEntry)
+	cachedBaselineTools    = make(map[promptassets.Mode]cachedBaselineToolsEntry)
 	cachedSanitizedPrompts = make(map[promptassets.Mode]string)
 )
 
@@ -53,8 +53,8 @@ func init() {
 					}
 				}
 				cachedBaselineTools[mode] = cachedBaselineToolsEntry{
-					tools:          filtered,
-					toolNames:      names,
+					tools:           filtered,
+					toolNames:       names,
 					hiddenToolNames: nil,
 				}
 			}
@@ -180,8 +180,8 @@ func (engine *Engine) Compile(input CompileInput) (CompiledPrompt, error) {
 	}
 
 	var (
-		tools          []json.RawMessage
-		toolNames      []string
+		tools           []json.RawMessage
+		toolNames       []string
 		hiddenToolNames []string
 	)
 	if cached, ok := cachedBaselineTools[assetMode]; ok {
@@ -316,6 +316,21 @@ func buildMessagesFromStructuredState(state *agentv1.ConversationStateStructure)
 
 // buildMessagesFromRequestContext 把 request_context 中的用户环境信息编译成上游可消费消息。
 func buildMessagesFromRequestContext(requestContext *agentv1.RequestContext) []Message {
+	return buildMessagesFromRequestContextDeduplicated(requestContext, nil)
+}
+
+// BuildRequestContextReplayMessages 导出 request_context 的精简回放形状，供其他链路复用。
+func BuildRequestContextReplayMessages(requestContext *agentv1.RequestContext) []Message {
+	return buildMessagesFromRequestContext(requestContext)
+}
+
+// BuildRequestContextReplayMessagesDeduplicated 导出 request_context 的回放形状，
+// 并自动跳过在同一个会话中前面 turn 已完整回放过的重复静态 rules/user_info/skills 内容。
+func BuildRequestContextReplayMessagesDeduplicated(requestContext *agentv1.RequestContext, lastEmittedStatic *string) []Message {
+	return buildMessagesFromRequestContextDeduplicated(requestContext, lastEmittedStatic)
+}
+
+func buildMessagesFromRequestContextDeduplicated(requestContext *agentv1.RequestContext, lastEmittedStatic *string) []Message {
 	if requestContext == nil {
 		return nil
 	}
@@ -325,7 +340,20 @@ func buildMessagesFromRequestContext(requestContext *agentv1.RequestContext) []M
 	mergeLocalAgentRules(requestContext)
 	hydrateLocalMCPDescriptors(requestContext)
 
-	sections := append(buildRequestContextStaticSections(requestContext), buildRequestContextRealtimeSections(requestContext)...)
+	staticSections := buildRequestContextStaticSections(requestContext)
+	staticContent := strings.TrimSpace(strings.Join(staticSections, "\n\n"))
+	realtimeSections := buildRequestContextRealtimeSections(requestContext)
+
+	sections := make([]string, 0, len(staticSections)+len(realtimeSections))
+	if staticContent != "" {
+		if lastEmittedStatic == nil || *lastEmittedStatic != staticContent {
+			sections = append(sections, staticSections...)
+			if lastEmittedStatic != nil {
+				*lastEmittedStatic = staticContent
+			}
+		}
+	}
+	sections = append(sections, realtimeSections...)
 	if len(sections) == 0 {
 		return nil
 	}
@@ -333,11 +361,6 @@ func buildMessagesFromRequestContext(requestContext *agentv1.RequestContext) []M
 		Role:    "user",
 		Content: strings.Join(sections, "\n\n"),
 	}}
-}
-
-// BuildRequestContextReplayMessages 导出 request_context 的精简回放形状，供其他链路复用。
-func BuildRequestContextReplayMessages(requestContext *agentv1.RequestContext) []Message {
-	return buildMessagesFromRequestContext(requestContext)
 }
 
 func buildRequestContextStaticSections(requestContext *agentv1.RequestContext) []string {
@@ -477,7 +500,7 @@ func buildRequestContextAgentSkillsSection(requestContext *agentv1.RequestContex
 	}
 	lines := []string{
 		"<agent_skills>",
-		"When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge. To use a skill, read the skill file at the provided absolute path using the Read tool, then follow the instructions within. When a skill is relevant or invoked via slash command, declare '⚡ Using skill: <skill_name>' at the beginning of your response and read the skill file IMMEDIATELY as your first action. NEVER just announce or mention a skill without actually reading and following it. Only use skills listed below.",
+		"When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge. To use a skill, read the skill file at the provided absolute path using the Read tool, then follow the instructions within. The '⚡ Using skill: <skill_name>' declaration and the mandatory first-action read apply ONLY to explicit slash-command invocations marked by a system reminder; a topic that merely resembles a skill is not an invocation. NEVER just announce or mention a skill without actually reading and following it. Only use skills listed below.",
 		"",
 		`<available_skills description="Skills the agent can use. Use the Read tool with the provided absolute path to fetch full contents.">`,
 	}
@@ -527,7 +550,10 @@ func deriveSkillNameFromPath(fullPath string) string {
 	return base
 }
 
-// detectInvokedSkill 检测用户输入是否显式调用了 Slash Command 形式的技能（例如 /brainstorm 或 /ak-brainstorm）。
+// detectInvokedSkill 检测用户输入是否显式调用了 Slash Command 形式的技能。
+// Chỉ nhận slash command trùng CHÍNH XÁC tên skill (không strip/append prefix "ak-"):
+// các command builtin của Cursor (/plan, /review, /test...) trùng tên rút gọn với
+// skill ak-* sẽ không còn tự nạp skill ngoài ý muốn.
 func detectInvokedSkill(userText string, requestContext *agentv1.RequestContext) (name string, path string) {
 	if requestContext == nil || strings.TrimSpace(userText) == "" {
 		return "", ""
@@ -558,7 +584,7 @@ func detectInvokedSkill(userText string, requestContext *agentv1.RequestContext)
 		sName := deriveSkillNameFromPath(p)
 		sNameLower := strings.ToLower(sName)
 		for _, cmd := range candidateCommands {
-			if cmd == sNameLower || cmd == strings.TrimPrefix(sNameLower, "ak-") || "ak-"+cmd == sNameLower {
+			if cmd == sNameLower {
 				return sName, p
 			}
 		}
@@ -574,7 +600,7 @@ func detectInvokedSkill(userText string, requestContext *agentv1.RequestContext)
 		sName := deriveSkillNameFromPath(p)
 		sNameLower := strings.ToLower(sName)
 		for _, cmd := range candidateCommands {
-			if cmd == sNameLower || cmd == strings.TrimPrefix(sNameLower, "ak-") || "ak-"+cmd == sNameLower {
+			if cmd == sNameLower {
 				return sName, p
 			}
 		}
@@ -669,7 +695,7 @@ func buildRequestContextMCPFileSystemSection(requestContext *agentv1.RequestCont
 	}
 
 	return fmt.Sprintf(
-		"<mcp_file_system>\n\n## MCP Tool Access\n\nYou have access to MCP tools through the MCP FileSystem. Embedded MCP tool descriptors below already satisfy the schema-discovery requirement when present. Only browse descriptor files under %s/<server>/tools/ when a server below does not include the tool you need.\n\n## MCP Resource Access\n\nYou also have access to MCP resources through the MCP FileSystem. Resource descriptors live under %s/<server>/resources/.\n\nAvailable MCP servers:\n\n<mcp_file_system_servers>%s</mcp_file_system_servers>%s\n</mcp_file_system>",
+		"<mcp_file_system>\n\n## MCP Tool Access\n\nYou have access to MCP tools through the MCP FileSystem. Embedded MCP tool descriptors below include each tool's description and, when present, a compact input schema (parameter names, types, required fields). Invoke MCP tools with CallMcpTool using exactly the parameter names from that schema; never invent parameter names. If a descriptor has no input_schema, or a call fails parameter validation, Read the tool JSON at its definition_path (or under %s/<server>/tools/<tool>.json) to obtain the full schema before calling or retrying.\n\n## MCP Resource Access\n\nYou also have access to MCP resources through the MCP FileSystem. Resource descriptors live under %s/<server>/resources/.\n\nAvailable MCP servers:\n\n<mcp_file_system_servers>%s</mcp_file_system_servers>%s\n</mcp_file_system>",
 		mcpRoot,
 		mcpRoot,
 		strings.Join(serverEntries, "\n\n"),
@@ -900,7 +926,11 @@ func buildEmbeddedMCPDescriptorSection(descriptor *agentv1.McpDescriptor, server
 		if description != "" {
 			entry += "\n<description>" + escapePromptXML(description) + "</description>"
 		}
-		if inputSchema := strings.TrimSpace(compactProtoJSON(tool.GetInputSchema())); inputSchema != "" {
+		inputSchema := strings.TrimSpace(tool.GetInputSchemaJson())
+		if inputSchema == "" && tool.GetInputSchema() != nil {
+			inputSchema = strings.TrimSpace(compactProtoJSON(tool.GetInputSchema()))
+		}
+		if inputSchema != "" {
 			entry += "\n<input_schema>" + escapePromptXML(inputSchema) + "</input_schema>"
 		}
 		entry += "\n</mcp_tool>"
@@ -1343,9 +1373,9 @@ func todoStatusLabel(status agentv1.TodoStatus) string {
 }
 
 // pruneHistoricalShellOutputs 扫描 prompt 消息流：
-// 1. Đối với các tin nhắn cách hiện tại >= turnThreshold (6) turns, các output của Shell có kích thước > 2.000 ký tự
-//    được thay thế bằng chuỗi tóm tắt nhỏ [Previous shell output of "<command>" truncated to save context].
-// 2. Đối với các output Shell gần đây, áp dụng bộ lọc cắt tỉa Output Shell nếu vượt quá 10.000 ký tự hoặc 250 dòng.
+//  1. Đối với các tin nhắn cách hiện tại >= turnThreshold (6) turns, các output của Shell có kích thước > 2.000 ký tự
+//     được thay thế bằng chuỗi tóm tắt nhỏ [Previous shell output of "<command>" truncated to save context].
+//  2. Đối với các output Shell gần đây, áp dụng bộ lọc cắt tỉa Output Shell nếu vượt quá 10.000 ký tự hoặc 250 dòng.
 func pruneHistoricalShellOutputs(messages []Message, turnThreshold int) []Message {
 	if len(messages) == 0 {
 		return messages
@@ -1468,4 +1498,3 @@ func truncateShellOutputLinesAndCharsText(text string) string {
 	}
 	return text
 }
-

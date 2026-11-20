@@ -423,6 +423,8 @@ func (service *Service) handleCompactionEvent(stream *ActiveStream, payload *str
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", err)
 	}
+	// Best-effort: trích memory durable từ handoff vừa compact (origin=auto).
+	service.captureMemoriesFromCompaction(stream, payload.SummaryText)
 	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, stream.CurrentModelCallID); err != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", err)
@@ -1495,7 +1497,9 @@ func (service *Service) generateCompactionSummary(ctx context.Context, stream *A
 	if err := service.recordTurnUsageSnapshot(stream, conversationID, turnSeq, requestID, modelCallID, "completed", usage, "", false); err != nil {
 		return "", fmt.Errorf("record compaction provider usage: %w", err)
 	}
-	return strings.TrimSpace(accumulated), nil
+	// Trần cứng cho cả path model-generated (ngang fallback path) để summary không
+	// bao giờ vào history vượt quá budget handoff đã định.
+	return truncateCompactionText(accumulated, compactionSummaryMaxChars), nil
 }
 
 func existingConversationSummaryText(conversation *ConversationFile) string {

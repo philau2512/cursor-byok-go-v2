@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -68,17 +69,34 @@ type ExecBridge interface {
 	ApplyExecClientMessage(msg *agentv1.ExecClientMessage, pending runtimecore.PendingExec) (ExecApplyResult, error)
 	// ApplyExecClientControl 处理客户端执行控制消息。
 	ApplyExecClientControl(msg *agentv1.ExecClientControlMessage, pending runtimecore.PendingExec) (ExecApplyResult, error)
+	// InvalidatePathReadCache 废弃指定路径的 Read tool 缓存。
+	InvalidatePathReadCache(path string)
+}
+
+type readCacheKey struct {
+	path   string
+	offset int32
+	limit  uint32
+}
+
+type readCacheEntry struct {
+	contentHash [32]byte
+	timestamp   time.Time
 }
 
 // Bridge 实现当前 MVP 阶段的执行桥。
 type Bridge struct {
 	// nextMessageID 生成 uint32 级别的桥消息编号。
 	nextMessageID atomic.Uint32
+	readMu        sync.Mutex
+	recentReads   map[readCacheKey]readCacheEntry
 }
 
 // NewBridge 创建一个执行桥实例。
 func NewBridge() *Bridge {
-	return &Bridge{}
+	return &Bridge{
+		recentReads: make(map[readCacheKey]readCacheEntry),
+	}
 }
 
 // OpenExec 打开一条执行型工具调用。
@@ -159,6 +177,12 @@ func (bridge *Bridge) ApplyExecClientMessage(msg *agentv1.ExecClientMessage, pen
 	switch pending.ExecKind {
 	case "read":
 		readResult := normalizeReadResultForModel(msg.GetReadResult())
+		if isWasted, notice := bridge.checkAndRecordRead(pending.ArgsJSON, readResult); isWasted {
+			result.ToolResultPayload = notice
+			result.ToolCall = buildReadCompletedToolCallWithNotice(pending.ToolCallID, pending.ArgsJSON, readResult, notice)
+			result.IsTerminal = true
+			return result, nil
+		}
 		result.ToolResultPayload = summarizeReadResult(readResult)
 		result.ToolCall = buildReadCompletedToolCall(pending.ToolCallID, pending.ArgsJSON, readResult)
 		if contentBlob, ok := readImageContentBlob(readResult); ok {
@@ -169,11 +193,17 @@ func (bridge *Bridge) ApplyExecClientMessage(msg *agentv1.ExecClientMessage, pen
 	case "write":
 		result.ToolResultPayload = summarizeWriteResult(msg.GetWriteResult())
 		result.ToolCall = buildWriteCompletedToolCall(pending.ToolCallID, pending.ArgsJSON, msg.GetWriteResult())
+		if msg.GetWriteResult() != nil && msg.GetWriteResult().GetSuccess() != nil {
+			bridge.InvalidatePathReadCache(msg.GetWriteResult().GetSuccess().GetPath())
+		}
 		result.IsTerminal = true
 		return result, nil
 	case "delete":
 		result.ToolResultPayload = summarizeDeleteResult(msg.GetDeleteResult())
 		result.ToolCall = buildDeleteCompletedToolCall(pending.ToolCallID, pending.ArgsJSON, msg.GetDeleteResult())
+		if msg.GetDeleteResult() != nil && msg.GetDeleteResult().GetSuccess() != nil {
+			bridge.InvalidatePathReadCache(msg.GetDeleteResult().GetSuccess().GetPath())
+		}
 		result.IsTerminal = true
 		return result, nil
 	case "glob":
@@ -651,7 +681,20 @@ func enrichCommandForStreaming(cmd string) string {
 	if trimmed == "" {
 		return cmd
 	}
-	
+
+	lower := strings.ToLower(trimmed)
+
+	// Python / Pytest / .py file unbuffered & UTF-8 encoding
+	if isPythonCommand(lower) && !strings.Contains(lower, "pythonunbuffered") {
+		return `$env:PYTHONUNBUFFERED="1"; $env:PYTHONIOENCODING="utf-8"; ` + trimmed
+	}
+
+	// Node.js suppress warnings to avoid buffering delays
+	if (strings.HasPrefix(lower, "node ") || strings.Contains(lower, "\\node.exe") || strings.Contains(lower, "/node ")) &&
+		!strings.Contains(lower, "node_no_warnings") {
+		return `$env:NODE_NO_WARNINGS="1"; ` + trimmed
+	}
+
 	return trimmed
 }
 
@@ -1582,6 +1625,107 @@ func buildReadCompletedToolCall(toolCallID string, argsJSON []byte, result *agen
 				Result: convertReadResultToReadToolResult(result),
 			},
 		},
+	}
+}
+
+func buildReadCompletedToolCallWithNotice(toolCallID string, argsJSON []byte, result *agentv1.ReadResult, notice string) *agentv1.ToolCall {
+	args, err := DecodeReadToolArgs(argsJSON)
+	if err != nil || args == nil {
+		args = &agentv1.ReadToolArgs{}
+	}
+	filePath := args.GetPath()
+	if strings.TrimSpace(filePath) == "" && result != nil && result.GetSuccess() != nil {
+		filePath = result.GetSuccess().GetPath()
+		args.Path = filePath
+	}
+	return &agentv1.ToolCall{
+		Tool: &agentv1.ToolCall_ReadToolCall{
+			ReadToolCall: &agentv1.ReadToolCall{
+				Args: args,
+				Result: &agentv1.ReadToolResult{
+					Result: &agentv1.ReadToolResult_Success{
+						Success: &agentv1.ReadToolSuccess{
+							Path: filePath,
+							Output: &agentv1.ReadToolSuccess_Content{
+								Content: notice,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// checkAndRecordRead 检测并在读取完全相同的文件及行数范围且内容未变时，返回 wasted call 提醒以阻断循环。
+func (bridge *Bridge) checkAndRecordRead(argsJSON []byte, result *agentv1.ReadResult) (bool, string) {
+	if bridge == nil || result == nil || result.GetSuccess() == nil {
+		return false, ""
+	}
+	content := result.GetSuccess().GetContent()
+	if content == "" {
+		return false, ""
+	}
+	path := strings.TrimSpace(result.GetSuccess().GetPath())
+	args, err := decodeReadExecArgs(argsJSON)
+	if err == nil && args.Path != "" {
+		path = args.Path
+	}
+	if path == "" {
+		return false, ""
+	}
+
+	var offsetVal int32
+	if args.Offset != nil {
+		offsetVal = *args.Offset
+	}
+	var limitVal uint32
+	if args.Limit != nil {
+		limitVal = *args.Limit
+	}
+
+	key := readCacheKey{
+		path:   filepath.Clean(path),
+		offset: offsetVal,
+		limit:  limitVal,
+	}
+
+	hash := sha256.Sum256([]byte(content))
+
+	bridge.readMu.Lock()
+	defer bridge.readMu.Unlock()
+
+	if bridge.recentReads == nil {
+		bridge.recentReads = make(map[readCacheKey]readCacheEntry)
+	}
+
+	if prev, exists := bridge.recentReads[key]; exists {
+		if prev.contentHash == hash {
+			fileName := filepath.Base(path)
+			notice := fmt.Sprintf("Wasted call — file unchanged since your last Read (%s). Refer to that earlier tool_result instead.", fileName)
+			return true, notice
+		}
+	}
+
+	bridge.recentReads[key] = readCacheEntry{
+		contentHash: hash,
+		timestamp:   time.Now(),
+	}
+	return false, ""
+}
+
+// InvalidatePathReadCache 废弃指定路径的 Read tool 缓存。
+func (bridge *Bridge) InvalidatePathReadCache(path string) {
+	if bridge == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	normalized := filepath.Clean(strings.TrimSpace(path))
+	bridge.readMu.Lock()
+	defer bridge.readMu.Unlock()
+	for k := range bridge.recentReads {
+		if strings.EqualFold(k.path, normalized) {
+			delete(bridge.recentReads, k)
+		}
 	}
 }
 

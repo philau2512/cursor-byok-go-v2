@@ -179,4 +179,3 @@ func TestMissingActiveTodoReplacementIDs_CompletedOldTasks(t *testing.T) {
 		t.Fatalf("expected no missing active ids when all existing tasks are completed, got: %v", missing)
 	}
 }
-

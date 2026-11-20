@@ -30,6 +30,7 @@ import (
 	modeladapter "cursor/internal/backend/agent/model"
 	promptengine "cursor/internal/backend/agent/prompt"
 	protocol "cursor/internal/backend/agent/protocol"
+	"cursor/internal/memory"
 )
 
 const (
@@ -306,11 +307,28 @@ type Service struct {
 	interactionBridge  interactionbridge.InteractionBridge
 	appendSeq          *appendSequenceTracker
 	runSerializers     sync.Map
+	// subagentOverridesMu bảo vệ snapshot overrides mới nhất mà client gửi lên qua
+	// RunRequest/PrewarmRequest — commit message đọc live y như routing của Task subagent.
+	subagentOverridesMu          sync.Mutex
+	latestSubagentModelOverrides map[string]runtimecore.SubagentModelOverrideSelection
+	// memoryStore + memoryConfig phục vụ project memory (tools, overview, capture).
+	memoryStore  *memory.Store
+	memoryConfig projectMemoryConfig
+}
+
+// projectMemoryConfig là seam tới config.Manager cho tính năng project memory.
+type projectMemoryConfig interface {
+	MemoryEnabled() bool
+	MemoryAutoCapture() bool
+	MemoryOverviewMaxBytes() int
 }
 
 type agentModelMemory interface {
 	LastAgentModelHash() string
 	SaveLastAgentModelHash(context.Context, string) error
+	LastExplorerModelHash() string
+	SaveLastExplorerModelHash(context.Context, string) error
+	CommitMessageModel() string
 }
 
 // NewService 使用默认依赖创建 forwarder 服务。
@@ -328,7 +346,14 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 	if candidate, ok := resolver.(debugLogConfig); ok {
 		debugConfig = candidate
 	}
+	memoryStore := memory.NewStore(appdata.MemoriesRootPath())
+	var memoryConfig projectMemoryConfig
+	if candidate, ok := resolver.(projectMemoryConfig); ok {
+		memoryConfig = candidate
+	}
 	debug := newDebugRecorder(historyRoot, broker, debugConfig)
+	promptCompiler := NewPromptCompiler(projector, NewToolCatalog(), NewReminderInjector(), rules, contentBlobs)
+	promptCompiler.SetMemoryDependencies(memoryStore, memoryConfig)
 	service := &Service{
 		store:              store,
 		contentBlobs:       contentBlobs,
@@ -337,7 +362,7 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 		docsIndexStore:     NewDocsIndexStore(appdata.DocsIndexRootPath()),
 		rules:              rules,
 		projector:          projector,
-		compiler:           NewPromptCompiler(projector, NewToolCatalog(), NewReminderInjector(), rules, contentBlobs),
+		compiler:           promptCompiler,
 		provider:           NewProviderGateway(resolver),
 		resolver:           resolver,
 		modelMemory:        modelMemory,
@@ -347,6 +372,8 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 		execBridge:         execbridge.NewBridge(),
 		interactionBridge:  interactionbridge.NewBridge(),
 		appendSeq:          newAppendSequenceTracker(),
+		memoryStore:        memoryStore,
+		memoryConfig:       memoryConfig,
 	}
 	service.startHistoryMaintenance()
 	return service
@@ -445,6 +472,59 @@ func (service *Service) BidiAppend(ctx context.Context, req *connect.Request[ais
 	}
 
 	return connect.NewResponse(&aiserverv1.BidiAppendResponse{}), nil
+}
+
+// UpdateConversationMetadata 处理客户端同步会话元数据（如重命名会话）。
+func (service *Service) UpdateConversationMetadata(ctx context.Context, req *connect.Request[agentv1.UpdateConversationMetadataRequest]) (*connect.Response[agentv1.UpdateConversationMetadataResponse], error) {
+	if service == nil || service.store == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("forwarder service is uninitialized"))
+	}
+	if req == nil || req.Msg == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("request message is required"))
+	}
+	conversationID := strings.TrimSpace(req.Msg.GetConversationId())
+	if conversationID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("conversation_id is required"))
+	}
+	name := strings.TrimSpace(req.Msg.GetName())
+	if name != "" {
+		onlyIfEmpty := req.Msg.GetOnlySetNameIfEmpty()
+		if err := service.store.UpdateConversationTitle(conversationID, name, onlyIfEmpty); err != nil {
+			log.Printf("forwarder update conversation title failed conversation_id=%s err=%v", conversationID, err)
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update conversation title: %w", err))
+		}
+	}
+	return connect.NewResponse(&agentv1.UpdateConversationMetadataResponse{}), nil
+}
+
+// NameAgent 生成或返回智能体/会话名称。
+func (service *Service) NameAgent(ctx context.Context, req *connect.Request[agentv1.NameAgentRequest]) (*connect.Response[agentv1.NameAgentResponse], error) {
+	if service == nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("forwarder service is uninitialized"))
+	}
+	name := "Agent"
+	if req != nil && req.Msg != nil {
+		msg := strings.TrimSpace(req.Msg.GetUserMessage())
+		if msg != "" {
+			firstLine := strings.Split(msg, "\n")[0]
+			firstLine = strings.TrimSpace(firstLine)
+			runes := []rune(firstLine)
+			if len(runes) > 40 {
+				name = string(runes[:40])
+			} else if len(runes) > 0 {
+				name = firstLine
+			}
+		}
+	}
+	return connect.NewResponse(&agentv1.NameAgentResponse{Name: name}), nil
+}
+
+// DeleteConversation 删除指定会话的数据。
+func (service *Service) DeleteConversation(conversationID string) error {
+	if service == nil || service.store == nil {
+		return fmt.Errorf("forwarder service is uninitialized")
+	}
+	return service.store.DeleteConversation(conversationID)
 }
 
 func queuedUserMessageDebugFields(clientKind string, intent InboundIntent) (map[string]any, bool) {
@@ -657,6 +737,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.SubagentTypeName = strings.TrimSpace(runRequest.GetSubagentTypeName())
 		parsedOverrides := parseSubagentModelOverrides(runRequest.GetSubagentModelOverrides())
 		intent.SubagentModelOverrides = parsedOverrides.Overrides
+		service.rememberSubagentModelOverrides(parsedOverrides.Overrides)
 		service.debug.LogRuntime(context.Background(), intent.RequestID, intent.ConversationID, "subagent_model_overrides_parsed", map[string]any{
 			"override_count": parsedOverrides.RawCount,
 			"valid_count":    len(parsedOverrides.Overrides),
@@ -681,6 +762,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		if intent.ModelID == "" {
 			intent.ModelID = "default"
 		}
+		service.maybeCaptureExplorerModelHash(context.Background(), intent.SubagentTypeName, intent.ModelID, intent.SubagentModelOverrides)
 		intent.ModelName = service.resolveRequestedModelName(message, intent.ModelID)
 	case "prewarm_request":
 		prewarmRequest := message.GetPrewarmRequest()
@@ -707,6 +789,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.RequestedContextTokens = extractRequestedContextTokens(message)
 		parsedOverrides := parseSubagentModelOverrides(prewarmRequest.GetSubagentModelOverrides())
 		intent.SubagentModelOverrides = parsedOverrides.Overrides
+		service.rememberSubagentModelOverrides(parsedOverrides.Overrides)
 		if intent.SubagentTypeName != "" {
 			if override, _, ok := runtimecore.LookupSubagentModelOverride(intent.SubagentModelOverrides, intent.SubagentTypeName); ok {
 				if strings.TrimSpace(override.Selection) == "model" {
@@ -946,11 +1029,15 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	}
 	updateStreamRequestContextData(stream, intent.RequestContext)
 	hydrateStreamMCPToolServers(stream, conversation.MCPToolServers)
+	hydrateStreamMCPToolDefinitionPaths(stream, conversation.MCPToolDefinitionPaths)
 	service.updateStreamMCPToolServers(stream, intent.RequestContext)
+	service.updateStreamMCPToolDefinitionPaths(stream, intent.RequestContext)
 	streamMCPToolServers := snapshotStreamMCPToolServers(stream)
+	streamMCPToolDefinitionPaths := snapshotStreamMCPToolDefinitionPaths(stream)
 	if _, err := service.store.UpdateConversationMeta(intent.ConversationID, func(conversation *ConversationFile) error {
 		if conversation != nil {
 			conversation.MCPToolServers = streamMCPToolServers
+			conversation.MCPToolDefinitionPaths = streamMCPToolDefinitionPaths
 		}
 		return nil
 	}); err != nil {
@@ -1051,6 +1138,7 @@ func (service *Service) handleCancelIntent(intent InboundIntent) error {
 	stream.PendingProviderAction = providerActionNone
 	stream.PendingCompaction = nil
 	stream.PatchEditQueues = make(map[string][]queuedPatchEditOperation)
+	stream.MemorySaveCount = 0
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
 	for _, pending := range pendingExecs {
@@ -1224,6 +1312,9 @@ func (service *Service) handleExecResult(intent InboundIntent) error {
 	result, err := service.execBridge.ApplyExecClientMessage(intent.ExecClientMessage, pending)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(pending.ExecKind) == "mcp" && strings.TrimSpace(result.ToolResultPayload) != "" {
+		result.ToolResultPayload = service.enrichMCPParameterError(stream, pending, result.ToolResultPayload)
 	}
 	if result.ShellOutputDelta != nil {
 		if err := service.broker.Publish(intent.RequestID, StreamEvent{
@@ -1611,8 +1702,6 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 	return nil
 }
 
-
-
 func shouldResumeAfterToolResults(finishReason string) bool {
 	switch strings.TrimSpace(finishReason) {
 	case "tool_use", "tool_calls", "function_call":
@@ -1621,8 +1710,6 @@ func shouldResumeAfterToolResults(finishReason string) bool {
 		return false
 	}
 }
-
-
 
 // driveProvider 由 actor 触发一次 provider pass，并把真实流包装成 provider_event 回投 mailbox。
 func (service *Service) driveProvider(stream *ActiveStream) error {
@@ -1682,16 +1769,37 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		return service.failStream(stream, "unknown", err)
 	}
 	compileStartedAt := time.Now().UTC()
-	compiled, err := service.compiler.Compile(conversation, mode, latestUserText, modelName)
+	var compiled CompiledConversation
+	if stream != nil {
+		stream.mu.Lock()
+		if stream.CachedCompiledContextVersion == conversation.ContextVersion &&
+			stream.CachedCompiledContextVersion > 0 &&
+			stream.CachedCompiledMode == mode &&
+			len(stream.CachedCompiled.Messages) > 0 {
+			compiled = stream.CachedCompiled
+		}
+		stream.mu.Unlock()
+	}
+	if len(compiled.Messages) == 0 {
+		var compileErr error
+		compiled, compileErr = service.compiler.Compile(conversation, mode, latestUserText, modelName)
+		if compileErr != nil {
+			service.setTurnPhase(stream, TurnPhaseFailed)
+			return service.failStream(stream, "unknown", compileErr)
+		}
+		compiled = guardCompiledConversationForProvider(compiled)
+		if stream != nil {
+			stream.mu.Lock()
+			stream.CachedCompiled = compiled
+			stream.CachedCompiledContextVersion = conversation.ContextVersion
+			stream.CachedCompiledMode = mode
+			stream.mu.Unlock()
+		}
+	}
 	compileDurationMS := time.Since(compileStartedAt).Milliseconds()
 	if compileDurationMS < 0 {
 		compileDurationMS = 0
 	}
-	if err != nil {
-		service.setTurnPhase(stream, TurnPhaseFailed)
-		return service.failStream(stream, "unknown", err)
-	}
-	compiled = guardCompiledConversationForProvider(compiled)
 	if compacted, compactErr := service.maybeCompactBeforeProvider(stream, conversation, compiled); compactErr != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", compactErr)
@@ -1906,6 +2014,74 @@ func (service *Service) maybeSaveLastAgentModelHash(conversation *ConversationFi
 	if err := service.modelMemory.SaveLastAgentModelHash(context.Background(), strings.TrimSpace(channel.ID)); err != nil {
 		log.Printf("forwarder failed to save last agent model hash channel_id=%s error=%v", strings.TrimSpace(channel.ID), err)
 	}
+}
+
+// rememberSubagentModelOverrides giữ snapshot overrides mới nhất mà client gửi lên.
+// Chỉ ghi đè khi payload non-empty: một số request không mang overrides và không được
+// xóa cấu hình đang hiệu lực.
+func (service *Service) rememberSubagentModelOverrides(overrides map[string]runtimecore.SubagentModelOverrideSelection) {
+	if service == nil || len(overrides) == 0 {
+		return
+	}
+	service.subagentOverridesMu.Lock()
+	service.latestSubagentModelOverrides = cloneSubagentModelOverrides(overrides)
+	service.subagentOverridesMu.Unlock()
+}
+
+// liveExplorerModelID trả về model ID mà Task subagent sẽ dùng *bây giờ*, resolve bằng
+// đúng chain lookup của routing subagent (type cụ thể -> explore -> generalPurpose).
+// "" khi client chưa gửi overrides (ví dụ vừa restart app, chưa có chat/prewarm nào).
+func (service *Service) liveExplorerModelID() string {
+	if service == nil {
+		return ""
+	}
+	service.subagentOverridesMu.Lock()
+	defer service.subagentOverridesMu.Unlock()
+	if len(service.latestSubagentModelOverrides) == 0 {
+		return ""
+	}
+	return explorerSubagentOverrideModelID(service.latestSubagentModelOverrides)
+}
+
+// maybeCaptureExplorerModelHash ghi lại model của subagent Explorer/explore (từ phiên chạy
+// hoặc từ override mà client gửi lên) vào config lastExplorerModelHash, phục vụ chain ưu tiên
+// model cho các tác vụ phụ như generate commit message / optimize prompt.
+func (service *Service) maybeCaptureExplorerModelHash(ctx context.Context, subagentTypeName string, intentModelID string, overrides map[string]runtimecore.SubagentModelOverrideSelection) {
+	if service == nil || service.modelMemory == nil || service.resolver == nil {
+		return
+	}
+	candidate := ""
+	switch strings.ToLower(strings.TrimSpace(subagentTypeName)) {
+	case "explore", "explorer":
+		candidate = strings.TrimSpace(intentModelID)
+	}
+	if candidate == "" || candidate == "default" {
+		candidate = explorerSubagentOverrideModelID(overrides)
+	}
+	if candidate == "" {
+		return
+	}
+	channel, err := service.resolver.SelectChannelForModel(ctx, candidate)
+	if err != nil || channel == nil || strings.TrimSpace(channel.ID) == "" {
+		if err != nil {
+			log.Printf("forwarder explorer model hash skipped model_id=%s error=%v", candidate, err)
+		}
+		return
+	}
+	if err := service.modelMemory.SaveLastExplorerModelHash(ctx, strings.TrimSpace(channel.ID)); err != nil {
+		log.Printf("forwarder failed to save last explorer model hash channel_id=%s error=%v", strings.TrimSpace(channel.ID), err)
+	}
+}
+
+// explorerSubagentOverrideModelID resolve model explore bằng đúng chain lookup mà Task
+// subagent routing dùng: "explore" rồi fallback "generalPurpose" (Cursor Settings ->
+// Models -> Task Models chỉ có một knob "Explore Subagent Model").
+func explorerSubagentOverrideModelID(overrides map[string]runtimecore.SubagentModelOverrideSelection) string {
+	override, _, ok := runtimecore.LookupSubagentModelOverride(overrides, "explore")
+	if !ok || strings.TrimSpace(override.Selection) != "model" {
+		return ""
+	}
+	return strings.TrimSpace(override.ModelID)
 }
 
 func (service *Service) persistDerivedPromptContexts(stream *ActiveStream, conversationID string, requestID string, conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string) (*ConversationFile, error) {
@@ -2460,8 +2636,6 @@ func (service *Service) closeStreamWithProviderError(
 	return service.failActiveStream(stream, conversationID, requestID, modelCallID, "provider_error", errorText)
 }
 
-
-
 func pendingBridgeCount(stream *ActiveStream) int {
 	if stream == nil {
 		return 0
@@ -2470,8 +2644,6 @@ func pendingBridgeCount(stream *ActiveStream) int {
 	defer stream.mu.Unlock()
 	return len(stream.PendingExecs) + len(stream.PendingInteractions)
 }
-
-
 
 func (service *Service) completeSuccessfulTurn(stream *ActiveStream, completion pendingTurnCompletion) error {
 	if stream == nil {
@@ -2606,12 +2778,32 @@ func (service *Service) checkpointCompiledConversation(stream *ActiveStream, con
 		return CompiledConversation{}, false
 	}
 	_, modelName, latestUserText, mode := checkpointPromptContext(stream)
+	if stream != nil {
+		stream.mu.Lock()
+		if stream.CachedCompiledContextVersion == conversation.ContextVersion &&
+			stream.CachedCompiledContextVersion > 0 &&
+			stream.CachedCompiledMode == mode &&
+			len(stream.CachedCompiled.Messages) > 0 {
+			cached := stream.CachedCompiled
+			stream.mu.Unlock()
+			return cached, true
+		}
+		stream.mu.Unlock()
+	}
 	compiled, err := service.compiler.Compile(conversation, mode, latestUserText, modelName)
 	if err != nil {
 		log.Printf("forwarder checkpoint token estimate failed request_id=%s conversation_id=%s err=%v", strings.TrimSpace(activeStreamRequestID(stream)), strings.TrimSpace(conversation.ConversationID), err)
 		return CompiledConversation{}, false
 	}
-	return guardCompiledConversationForProvider(compiled), true
+	guarded := guardCompiledConversationForProvider(compiled)
+	if stream != nil {
+		stream.mu.Lock()
+		stream.CachedCompiled = guarded
+		stream.CachedCompiledContextVersion = conversation.ContextVersion
+		stream.CachedCompiledMode = mode
+		stream.mu.Unlock()
+	}
+	return guarded, true
 }
 
 func (service *Service) checkpointDisplayMaxTokens(stream *ActiveStream, conversation *ConversationFile) int64 {
@@ -3941,6 +4133,36 @@ func hydrateStreamMCPToolServers(stream *ActiveStream, servers map[string]string
 	stream.mu.Unlock()
 }
 
+func (service *Service) updateStreamMCPToolDefinitionPaths(stream *ActiveStream, requestContext *agentv1.RequestContext) {
+	if stream == nil || !hasMCPDescriptorSnapshot(requestContext) {
+		return
+	}
+	paths := collectMCPToolDefinitionPaths(requestContext)
+	stream.mu.Lock()
+	stream.MCPToolDefinitionPaths = cloneStringMap(paths)
+	stream.UpdatedAt = time.Now().UTC()
+	stream.mu.Unlock()
+}
+
+func snapshotStreamMCPToolDefinitionPaths(stream *ActiveStream) map[string]string {
+	if stream == nil {
+		return nil
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return cloneStringMap(stream.MCPToolDefinitionPaths)
+}
+
+func hydrateStreamMCPToolDefinitionPaths(stream *ActiveStream, paths map[string]string) {
+	if stream == nil {
+		return
+	}
+	stream.mu.Lock()
+	stream.MCPToolDefinitionPaths = cloneStringMap(paths)
+	stream.UpdatedAt = time.Now().UTC()
+	stream.mu.Unlock()
+}
+
 func (service *Service) rewriteDirectMCPToolInvocation(stream *ActiveStream, invocation runtimecore.ToolInvocation) runtimecore.ToolInvocation {
 	requestedToolName := strings.TrimSpace(invocation.ToolName)
 	if requestedToolName == "" || isExecTool(requestedToolName) {
@@ -4054,8 +4276,6 @@ func readStringAny(value any) string {
 	return strings.TrimSpace(text)
 }
 
-
-
 // inferToolName 从完整 ToolCall proto 中反推出 canonical 工具名。
 func inferToolName(toolCall *agentv1.ToolCall) string {
 	if toolCall == nil || toolCall.GetTool() == nil {
@@ -4146,8 +4366,6 @@ func deriveToolNameFromPendingExec(pending runtimecore.PendingExec) string {
 		return ""
 	}
 }
-
-
 
 func isExecTool(name string) bool {
 	switch strings.TrimSpace(name) {

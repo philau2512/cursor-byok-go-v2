@@ -1,0 +1,23 @@
+schema_version: 1
+module_path: ""
+title: Cursor BYOK Desktop Shell & Protocol Toolchain
+scope:
+    - README.md
+    - README-CN.md
+    - CONTRIBUTING.md
+    - CONTRIBUTING_EN.md
+    - release-notes.md
+    - .gitignore
+    - .dockerignore
+    - go.mod
+    - go.sum
+    - Taskfile.yml
+    - build.bat
+    - build.ps1
+    - main.go
+    - CHANGELOG.md
+    - LICENSE
+    - cursor.exe
+source_files: []
+depends_on: []
+related_to: []

@@ -17,6 +17,8 @@
     "TodoWrite",
     "WebFetch",
     "WebSearch",
-    "Write"
+    "Write",
+    "SaveMemory",
+    "SearchMemory"
   ]
 }

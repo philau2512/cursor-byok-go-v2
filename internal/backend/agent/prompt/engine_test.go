@@ -276,8 +276,8 @@ func TestHydrateLocalMCPDescriptorsFullDescription(t *testing.T) {
 	if !strings.Contains(prompt, "<description>Inspects uncommitted Git changes (status and diff) with structured summaries.</description>") {
 		t.Fatal("compiled prompt missing hydrated full description for InspectChanges")
 	}
-	if strings.Contains(prompt, "<input_schema>") {
-		t.Fatal("compiled prompt should not contain inline input_schema (should be lazy loaded via definition_path)")
+	if !strings.Contains(prompt, `<input_schema>{&quot;properties&quot;:{&quot;path&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;path&quot;],&quot;type&quot;:&quot;object&quot;}</input_schema>`) {
+		t.Fatal("compiled prompt should inline compact input_schema with required params")
 	}
 	if !strings.Contains(prompt, `<mcp_tool name="fast_context_search">`) {
 		t.Fatal("compiled prompt missing fast_context_search tool")
@@ -287,7 +287,7 @@ func TestHydrateLocalMCPDescriptorsFullDescription(t *testing.T) {
 	}
 }
 
-func TestHydrateLocalMCPDescriptorsLazyLoadPreservesDescription(t *testing.T) {
+func TestHydrateLocalMCPDescriptorsPreservesDescriptionAndInlinesSchema(t *testing.T) {
 	tempDir := t.TempDir()
 	toolDefPath := filepath.Join(tempDir, "query.json")
 	toolJSON := `{
@@ -340,8 +340,8 @@ func TestHydrateLocalMCPDescriptorsLazyLoadPreservesDescription(t *testing.T) {
 	if !strings.Contains(prompt, "<description>Pre-existing client description</description>") {
 		t.Fatal("compiled prompt should preserve pre-existing client description")
 	}
-	if strings.Contains(prompt, "<input_schema>") {
-		t.Fatal("compiled prompt should not contain inline input_schema for lazy loaded tools")
+	if !strings.Contains(prompt, `<input_schema>{&quot;properties&quot;:{&quot;sql&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}</input_schema>`) {
+		t.Fatal("compiled prompt should hydrate compact input_schema from definition file even when client already provided description")
 	}
 }
 
@@ -648,6 +648,48 @@ func TestSlashCommandAutoInjectsSkillReminder(t *testing.T) {
 	}
 }
 
+func TestSlashCommandSimilarNameDoesNotHijackSkill(t *testing.T) {
+	tempDir := t.TempDir()
+	skillPath := filepath.Join(tempDir, "skills", "ak-plan", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("Plan skill instructions"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	compile := func(userText string) string {
+		t.Helper()
+		compiled, err := NewEngine().Compile(CompileInput{
+			Mode:                   agentv1.AgentMode_AGENT_MODE_AGENT,
+			CurrentUserMessageText: userText,
+			RequestContext: &agentv1.RequestContext{
+				AgentSkills: []*agentv1.AgentSkill{
+					{FullPath: skillPath, Description: "Plan skill description"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		var text string
+		for _, m := range compiled.Messages {
+			text += m.Content + "\n"
+		}
+		return text
+	}
+
+	// "/plan" là command builtin của Cursor, không được auto-invoke skill "ak-plan".
+	if text := compile("/plan refactor the auth module"); strings.Contains(text, "Using skill: ak-plan") {
+		t.Fatal("similar-name builtin command must not hijack ak-* skill")
+	}
+
+	// Chỉ invocation tường minh với đúng tên skill mới được nạp.
+	if text := compile("/ak-plan refactor the auth module"); !strings.Contains(text, "Using skill: ak-plan") {
+		t.Fatal("exact skill name invocation should still load the skill")
+	}
+}
+
 func TestPruneHistoricalShellOutputs(t *testing.T) {
 	// Create a sequence of 8 user turns
 	var messages []Message
@@ -713,3 +755,61 @@ func TestPruneHistoricalShellOutputs(t *testing.T) {
 	}
 }
 
+func TestBuildRequestContextReplayMessagesDeduplicated(t *testing.T) {
+	rc1 := &agentv1.RequestContext{
+		Env: &agentv1.RequestContextEnv{
+			OsVersion: "win32 10.0.22621",
+			Shell:     "bash",
+		},
+		Rules: []*agentv1.CursorRule{
+			{FullPath: "rule1.mdc", Content: "Always be concise."},
+		},
+	}
+
+	var lastEmittedStatic string
+
+	// Turn 1: should emit static rules and user info
+	msgs1 := BuildRequestContextReplayMessagesDeduplicated(rc1, &lastEmittedStatic)
+	if len(msgs1) != 1 {
+		t.Fatalf("expected 1 message in turn 1, got %d", len(msgs1))
+	}
+	if !strings.Contains(msgs1[0].Content, "Always be concise.") {
+		t.Fatalf("turn 1 missing rule content: %s", msgs1[0].Content)
+	}
+	if !strings.Contains(msgs1[0].Content, "win32 10.0.22621") {
+		t.Fatalf("turn 1 missing os version: %s", msgs1[0].Content)
+	}
+
+	// Turn 2 with same rules: should be deduplicated (no duplicate static rules message)
+	rc2 := &agentv1.RequestContext{
+		Env: &agentv1.RequestContextEnv{
+			OsVersion: "win32 10.0.22621",
+			Shell:     "bash",
+		},
+		Rules: []*agentv1.CursorRule{
+			{FullPath: "rule1.mdc", Content: "Always be concise."},
+		},
+	}
+	msgs2 := BuildRequestContextReplayMessagesDeduplicated(rc2, &lastEmittedStatic)
+	if len(msgs2) != 0 {
+		t.Fatalf("expected 0 messages in turn 2 due to deduplication, got %d: %s", len(msgs2), msgs2[0].Content)
+	}
+
+	// Turn 3 with modified rule: should emit updated static content
+	rc3 := &agentv1.RequestContext{
+		Env: &agentv1.RequestContextEnv{
+			OsVersion: "win32 10.0.22621",
+			Shell:     "bash",
+		},
+		Rules: []*agentv1.CursorRule{
+			{FullPath: "rule1.mdc", Content: "Always be concise and accurate."},
+		},
+	}
+	msgs3 := BuildRequestContextReplayMessagesDeduplicated(rc3, &lastEmittedStatic)
+	if len(msgs3) != 1 {
+		t.Fatalf("expected 1 message in turn 3 after rule update, got %d", len(msgs3))
+	}
+	if !strings.Contains(msgs3[0].Content, "Always be concise and accurate.") {
+		t.Fatalf("turn 3 missing updated rule content: %s", msgs3[0].Content)
+	}
+}

@@ -1,0 +1,1 @@
+Adding a new asset requires extending the `//go:embed` directive in `embed.go` and registering the corresponding `Mode` constant plus cache slot in `init()`. New tool variants are added by editing `tools.json` under `variants` and referencing them from `modes/<mode>.json`.

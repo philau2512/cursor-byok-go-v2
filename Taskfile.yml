@@ -92,6 +92,74 @@ tasks:
           DMG_NAME: macos-intel.dmg
           SCAN: '{{.SCAN}}'
 
+  build:darwin:dmg:
+    summary: 构建可自定义文件名的 macOS DMG（供 build-mac.sh 调用）
+    vars:
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
+      DARWIN_NAME: '{{if eq .TARGET_ARCH "arm64"}}macos-arm64{{else}}macos-intel{{end}}'
+    cmds:
+      - task: darwin:package:dmg
+        vars:
+          ARCH: '{{.TARGET_ARCH}}'
+          BINARY_NAME: '{{.BINARY_NAME | default .DARWIN_NAME}}'
+          OUTPUT: '{{.OUTPUT | default (printf "%s/%s" .BIN_DIR .DARWIN_NAME)}}'
+          APP_BUNDLE: '{{.APP_BUNDLE | default (printf "%s.app" .DARWIN_NAME)}}'
+          DMG_NAME: '{{.DMG_NAME | default (printf "%s.dmg" .DARWIN_NAME)}}'
+          SCAN: '{{.SCAN}}'
+
+  build:darwin:crosscompile:
+    summary: 在 Windows 上通过 Zig + macOS SDK 交叉编译 macOS 应用包（供 build-mac.bat 调用）
+    preconditions:
+      - sh: zig version >/dev/null 2>&1
+        msg: "未检测到 Zig，交叉编译 macOS 需要 Zig 作为 C 编译器：winget install zig.zig"
+      - sh: test -d "{{.SDK_DIR}}/System/Library/Frameworks"
+        msg: "未找到有效的 macOS SDK（{{.SDK_DIR}}）。请解压 MacOSX.sdk 到 build/sdk/MacOSX.sdk，或用 SDK_DIR 指定路径。"
+    vars:
+      MACOS_ARCH: '{{.MACOS_ARCH | default "arm64"}}'
+      ZIG_TARGET: '{{if eq .MACOS_ARCH "arm64"}}aarch64-macos12{{else}}x86_64-macos10.15{{end}}'
+      MIN_VERSION: '{{if eq .MACOS_ARCH "arm64"}}12.0{{else}}10.15{{end}}'
+      SDK_DIR: '{{.SDK_DIR | default (printf "%s/build/sdk/MacOSX.sdk" .TASKFILE_DIR)}}'
+      BINARY_NAME: '{{if eq .MACOS_ARCH "arm64"}}macos-arm64{{else}}macos-intel{{end}}'
+      STAGE_DIR: '{{.BIN_DIR}}/.macos-cross'
+      BUILD_FLAGS: '-tags production -trimpath -buildvcs=false -ldflags="-w -s -X cursor/internal/buildinfo.Version={{.APP_VERSION}}"'
+      ZIP_PATH: '{{.ZIP_PATH | default (printf "%s/%s.zip" .BIN_DIR .BINARY_NAME)}}'
+    env:
+      GOOS: darwin
+      GOARCH: '{{.MACOS_ARCH}}'
+      CGO_ENABLED: 1
+      CC: 'zig cc -target {{.ZIG_TARGET}} -isysroot {{.SDK_DIR}}'
+      CXX: 'zig c++ -target {{.ZIG_TARGET}} -isysroot {{.SDK_DIR}}'
+      CGO_CFLAGS: '-mmacosx-version-min={{.MIN_VERSION}}'
+      CGO_LDFLAGS: '-mmacosx-version-min={{.MIN_VERSION}}'
+      MACOSX_DEPLOYMENT_TARGET: '{{.MIN_VERSION}}'
+    deps:
+      - task: common:go:mod:tidy
+      - task: common:build:frontend
+        vars:
+          BUILD_FLAGS: '{{.BUILD_FLAGS}}'
+      - task: common:generate:icons
+    cmds:
+      - go build {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.BINARY_NAME}}"
+      - rm -rf "{{.STAGE_DIR}}"
+      - mkdir -p "{{.STAGE_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
+      - mkdir -p "{{.STAGE_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
+      - cp build/darwin/icons.icns "{{.STAGE_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
+      - cp "{{.BIN_DIR}}/{{.BINARY_NAME}}" "{{.STAGE_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}"
+      - cp build/darwin/Info.plist "{{.STAGE_DIR}}/{{.APP_NAME}}.app/Contents"
+      - cp build/darwin/install-mac.command "{{.STAGE_DIR}}/install.command"
+      - |
+        cat > "{{.STAGE_DIR}}/README.txt" <<'EOF'
+        在 Mac 上安装步骤：
+        1. 双击 zip 解压到任意目录。
+        2. 双击 install.command；如提示 Permission denied，在终端执行：
+           cd 解压目录 && bash install.command
+        3. 脚本会自动 chmod、去除隔离属性、临时签名并启动应用（首次运行需在系统设置允许）。
+        EOF
+      - cmd: powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; Remove-Item -LiteralPath '{{.ZIP_PATH}}' -Force -ErrorAction SilentlyContinue; [System.IO.Compression.ZipFile]::CreateFromDirectory('{{.STAGE_DIR}}', '{{.ZIP_PATH}}')"
+        platforms: [windows]
+      - rm -rf "{{.STAGE_DIR}}"
+      - rm -f "{{.BIN_DIR}}/{{.BINARY_NAME}}"
+
   build:windows:binary:
     summary: Build a Windows executable without creating a ZIP archive
     cmds:

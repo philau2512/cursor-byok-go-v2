@@ -1,0 +1,1 @@
+Builds go through `yarn build` / `yarn build:dev` which invoke `scripts/run-vite-build.mjs`; pass `--scan` (or set `STATIC_I18N_SCAN=true`) to regenerate the i18n catalog and locale JSON files under `src/i18n/generated` and `src/i18n/locales/`. Development uses `yarn dev` (Vite dev server).

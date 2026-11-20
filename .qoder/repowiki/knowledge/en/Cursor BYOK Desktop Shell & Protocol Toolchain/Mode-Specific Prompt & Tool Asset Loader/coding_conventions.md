@@ -1,0 +1,4 @@
+- Every exported accessor is paired with two forms: a `ReadXxx(mode)` returning `(value, error)` and a `MustReadXxx(mode)` that panics on failure, giving callers a choice between explicit error handling and fatal initialization.
+- Asset paths are constructed via `fmt.Sprintf("%s/prompt.md", normalized)` or similar helpers rather than hard-coded literals scattered across callers, keeping path layout centralized.
+- Per-mode configuration lives as plain JSON under `modes/<mode>.json` referencing canonical tool names from the central `tools.json`, with overrides expressed as `<tool>.<variant>` keys resolved in priority order (explicit variant → mode variant → canonical).
+- Package-level caches populated once in `init()` serve all subsequent reads directly, avoiding repeated I/O and string conversions on the hot path.

@@ -1,0 +1,1 @@
+Go toolchain for the extractor (uses `github.com/jhump/protoreflect/desc` for post-generation proto parsing/validation); optional `prettier` invocation to normalize the input JS before regex extraction.
