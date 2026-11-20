@@ -54,7 +54,7 @@ func TestExtractRequestContextFromDynamicContextAndLegacy(t *testing.T) {
 func TestNormalizeRealtimeRequestContextPreservesEnvAndRepos(t *testing.T) {
 	rc := &agentv1.RequestContext{
 		Env: &agentv1.RequestContextEnv{
-			ProjectFolder: "/workspace/root",
+			ProjectFolder:  "/workspace/root",
 			WorkspacePaths: []string{"/workspace/root"},
 		},
 		GitRepos: []*agentv1.GitRepoInfo{

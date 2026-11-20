@@ -1178,6 +1178,9 @@ func mergeConversationMetadata(target *ConversationFile, source *ConversationFil
 	target.AutoCompactionTriggeredAt = source.AutoCompactionTriggeredAt
 	target.AutoCompactionSourceModelCallID = source.AutoCompactionSourceModelCallID
 	target.CurrentPlanText = source.CurrentPlanText
+	if len(source.WorkspacePaths) > 0 {
+		target.WorkspacePaths = cloneStringSlice(source.WorkspacePaths)
+	}
 	target.CurrentPlans = clonePlanRegistryEntries(source.CurrentPlans)
 	target.CurrentTodos = cloneTodoItems(source.CurrentTodos)
 	target.MCPToolServers = cloneStringMap(source.MCPToolServers)
@@ -1328,6 +1331,7 @@ func cloneConversationFile(conversation *ConversationFile) *ConversationFile {
 	cloned.MCPToolServers = cloneStringMap(conversation.MCPToolServers)
 	cloned.MCPToolDefinitionPaths = cloneStringMap(conversation.MCPToolDefinitionPaths)
 	cloned.ImportedTurnIDs = cloneByteSlices(conversation.ImportedTurnIDs)
+	cloned.WorkspacePaths = cloneStringSlice(conversation.WorkspacePaths)
 	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
 	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
 	cloned.Entries = append([]HistoryEntry(nil), conversation.Entries...)
@@ -1344,6 +1348,7 @@ func cloneConversationMetadata(conversation *ConversationFile) *ConversationFile
 	cloned.MCPToolServers = cloneStringMap(conversation.MCPToolServers)
 	cloned.MCPToolDefinitionPaths = cloneStringMap(conversation.MCPToolDefinitionPaths)
 	cloned.ImportedTurnIDs = cloneByteSlices(conversation.ImportedTurnIDs)
+	cloned.WorkspacePaths = cloneStringSlice(conversation.WorkspacePaths)
 	cloned.LatestRequestPrefix = cloneConversationRequestPrefix(conversation.LatestRequestPrefix)
 	cloned.LastProviderCall = cloneConversationProviderCall(conversation.LastProviderCall)
 	cloned.Entries = nil

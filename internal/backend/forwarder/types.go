@@ -16,41 +16,44 @@ import (
 )
 
 type ConversationFile struct {
-	SchemaVersion                   int                                   `json:"schema_version,omitempty"`
-	ConversationID                  string                                `json:"conversation_id"`
-	RootConversationID              string                                `json:"root_conversation_id"`
-	ParentConversationID            string                                `json:"parent_conversation_id"`
-	ParentToolCallID                string                                `json:"parent_tool_call_id"`
-	Title                           string                                `json:"title,omitempty"`
-	Name                            string                                `json:"name,omitempty"`
-	SubagentTypeName                string                                `json:"subagent_type_name,omitempty"`
-	AgentTranscriptsFolder          string                                `json:"agent_transcripts_folder,omitempty"`
-	Mode                            string                                `json:"mode"`
-	ContextVersion                  int64                                 `json:"context_version,omitempty"`
-	CurrentLoopID                   string                                `json:"current_loop_id,omitempty"`
-	CurrentLoopStatus               string                                `json:"current_loop_status,omitempty"`
-	CurrentRequestID                string                                `json:"current_request_id,omitempty"`
-	CurrentTurnSeq                  int64                                 `json:"current_turn_seq,omitempty"`
-	TokenDetailsUsedTokens          uint32                                `json:"token_details_used_tokens,omitempty"`
-	TokenDetailsMaxTokens           uint32                                `json:"token_details_max_tokens,omitempty"`
-	AutoCompactionPending           bool                                  `json:"auto_compaction_pending,omitempty"`
-	AutoCompactionPromptTokens      int64                                 `json:"auto_compaction_prompt_tokens,omitempty"`
-	AutoCompactionReserveTokens     int64                                 `json:"auto_compaction_reserve_tokens,omitempty"`
-	AutoCompactionTriggeredAt       string                                `json:"auto_compaction_triggered_at,omitempty"`
-	AutoCompactionSourceModelCallID string                                `json:"auto_compaction_source_model_call_id,omitempty"`
-	CurrentPlanText                 string                                `json:"current_plan_text,omitempty"`
-	CurrentPlans                    map[string]*agentv1.PlanRegistryEntry `json:"current_plans,omitempty"`
-	CurrentTodos                    []*agentv1.TodoItem                   `json:"current_todos,omitempty"`
-	MCPToolServers                  map[string]string                     `json:"mcp_tool_servers,omitempty"`
-	MCPToolDefinitionPaths          map[string]string                     `json:"mcp_tool_definition_paths,omitempty"`
-	ImportedTurnIDs                 [][]byte                              `json:"imported_turn_ids,omitempty"`
-	LatestRequestPrefix             *ConversationRequestPrefix            `json:"latest_request_prefix,omitempty"`
-	LastProviderCall                *ConversationProviderCall             `json:"last_provider_call,omitempty"`
-	CreatedAt                       time.Time                             `json:"created_at"`
-	UpdatedAt                       time.Time                             `json:"updated_at"`
-	NextTurnSeq                     int64                                 `json:"next_turn_seq"`
-	NextEntrySeq                    int64                                 `json:"next_entry_seq"`
-	Entries                         []HistoryEntry                        `json:"entries,omitempty"`
+	SchemaVersion                   int    `json:"schema_version,omitempty"`
+	ConversationID                  string `json:"conversation_id"`
+	RootConversationID              string `json:"root_conversation_id"`
+	ParentConversationID            string `json:"parent_conversation_id"`
+	ParentToolCallID                string `json:"parent_tool_call_id"`
+	Title                           string `json:"title,omitempty"`
+	Name                            string `json:"name,omitempty"`
+	SubagentTypeName                string `json:"subagent_type_name,omitempty"`
+	AgentTranscriptsFolder          string `json:"agent_transcripts_folder,omitempty"`
+	Mode                            string `json:"mode"`
+	ContextVersion                  int64  `json:"context_version,omitempty"`
+	CurrentLoopID                   string `json:"current_loop_id,omitempty"`
+	CurrentLoopStatus               string `json:"current_loop_status,omitempty"`
+	CurrentRequestID                string `json:"current_request_id,omitempty"`
+	CurrentTurnSeq                  int64  `json:"current_turn_seq,omitempty"`
+	TokenDetailsUsedTokens          uint32 `json:"token_details_used_tokens,omitempty"`
+	TokenDetailsMaxTokens           uint32 `json:"token_details_max_tokens,omitempty"`
+	AutoCompactionPending           bool   `json:"auto_compaction_pending,omitempty"`
+	AutoCompactionPromptTokens      int64  `json:"auto_compaction_prompt_tokens,omitempty"`
+	AutoCompactionReserveTokens     int64  `json:"auto_compaction_reserve_tokens,omitempty"`
+	AutoCompactionTriggeredAt       string `json:"auto_compaction_triggered_at,omitempty"`
+	AutoCompactionSourceModelCallID string `json:"auto_compaction_source_model_call_id,omitempty"`
+	CurrentPlanText                 string `json:"current_plan_text,omitempty"`
+	// WorkspacePaths là các root workspace client báo lên ở run request gần nhất
+	// (root đầu tiên dùng làm scope key cho project memory).
+	WorkspacePaths         []string                              `json:"workspace_paths,omitempty"`
+	CurrentPlans           map[string]*agentv1.PlanRegistryEntry `json:"current_plans,omitempty"`
+	CurrentTodos           []*agentv1.TodoItem                   `json:"current_todos,omitempty"`
+	MCPToolServers         map[string]string                     `json:"mcp_tool_servers,omitempty"`
+	MCPToolDefinitionPaths map[string]string                     `json:"mcp_tool_definition_paths,omitempty"`
+	ImportedTurnIDs        [][]byte                              `json:"imported_turn_ids,omitempty"`
+	LatestRequestPrefix    *ConversationRequestPrefix            `json:"latest_request_prefix,omitempty"`
+	LastProviderCall       *ConversationProviderCall             `json:"last_provider_call,omitempty"`
+	CreatedAt              time.Time                             `json:"created_at"`
+	UpdatedAt              time.Time                             `json:"updated_at"`
+	NextTurnSeq            int64                                 `json:"next_turn_seq"`
+	NextEntrySeq           int64                                 `json:"next_entry_seq"`
+	Entries                []HistoryEntry                        `json:"entries,omitempty"`
 }
 
 type ConversationRequestPrefix struct {
@@ -154,11 +157,13 @@ type ActiveStream struct {
 	ThinkingEffort         string
 	SubagentModelOverrides map[string]runtimecore.SubagentModelOverrideSelection
 
-	CurrentModelCallID                          string
-	ProviderActive                              bool
-	ProviderCancel                              func()
-	ProviderPassCount                           int
-	ToolInvocationCount                         int
+	CurrentModelCallID  string
+	ProviderActive      bool
+	ProviderCancel      func()
+	ProviderPassCount   int
+	ToolInvocationCount int
+	// MemorySaveCount đếm SaveMemory trong một run để rate-limit (P5).
+	MemorySaveCount                             int
 	ActorMailbox                                chan streamCommandEnvelope
 	ActorDone                                   chan struct{}
 	Phase                                       TurnPhase

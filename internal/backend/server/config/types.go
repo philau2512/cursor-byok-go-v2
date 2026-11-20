@@ -62,6 +62,15 @@ type Config struct {
 	// LastExplorerModelHash được tự động ghi lại từ subagent model overrides (Explorer/explore)
 	// mà Cursor client gửi lên, dùng làm model ưu tiên cho các tác vụ phụ như commit message.
 	LastExplorerModelHash string `json:"lastExplorerModelHash,omitempty" yaml:"lastExplorerModelHash,omitempty"`
+	// MemoryEnabled = nil nghĩa là bật mặc định; *false tắt toàn bộ project memory
+	// (overview injection, tool SaveMemory/SearchMemory, auto-capture).
+	MemoryEnabled *bool `json:"memoryEnabled,omitempty" yaml:"memoryEnabled,omitempty"`
+	// MemoryAutoCapture = nil nghĩa là bật mặc định; *false tắt việc trích memory
+	// tự động từ compaction handoff (origin=auto).
+	MemoryAutoCapture *bool `json:"memoryAutoCapture,omitempty" yaml:"memoryAutoCapture,omitempty"`
+	// MemoryOverviewMaxBytes là ngân sách byte của block overview trong request;
+	// 0 = mặc định 4096, clamp [512, 16384].
+	MemoryOverviewMaxBytes int `json:"memoryOverviewMaxBytes,omitempty" yaml:"memoryOverviewMaxBytes,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -92,12 +101,34 @@ func NormalizeConfig(input Config) (Config, error) {
 	output.LastAgentModelHash = strings.TrimSpace(input.LastAgentModelHash)
 	output.CommitMessageModel = strings.TrimSpace(input.CommitMessageModel)
 	output.LastExplorerModelHash = strings.TrimSpace(input.LastExplorerModelHash)
+	output.MemoryEnabled = input.MemoryEnabled
+	output.MemoryAutoCapture = input.MemoryAutoCapture
+	output.MemoryOverviewMaxBytes = normalizeMemoryOverviewMaxBytes(input.MemoryOverviewMaxBytes)
 	adapters, err := NormalizeModelAdapterConfigs(input.ModelAdapters)
 	if err != nil {
 		return Config{}, err
 	}
 	output.ModelAdapters = adapters
 	return output, nil
+}
+
+const (
+	memoryOverviewMinBytes     = 512
+	memoryOverviewMaxBytesCap  = 16384
+	memoryOverviewDefaultBytes = 4096
+)
+
+func normalizeMemoryOverviewMaxBytes(value int) int {
+	switch {
+	case value <= 0:
+		return memoryOverviewDefaultBytes
+	case value < memoryOverviewMinBytes:
+		return memoryOverviewMinBytes
+	case value > memoryOverviewMaxBytesCap:
+		return memoryOverviewMaxBytesCap
+	default:
+		return value
+	}
 }
 
 func NormalizeModelAdapterConfigs(input []ModelAdapterConfig) ([]ModelAdapterConfig, error) {

@@ -11,12 +11,12 @@ const (
 	projectedReplayKiB = 1024
 
 	projectedReadReplayLimit       = 64 * projectedReplayKiB
-	projectedShellReplayLimit      = 10000 // Cắt tỉa Output Shell trần 10.000 ký tự
-	projectedShellStreamLimit      = 10000 // 10.000 ký tự cho stdout/stderr
-	projectedShellInterleavedLimit = 10000 // 10.000 ký tự cho interleaved output
-	projectedShellMaxLines         = 250   // Trần 250 dòng
-	projectedShellHeadLines        = 100   // Lấy 100 dòng đầu
-	projectedShellTailLines        = 50    // Lấy 50 dòng cuối
+	projectedShellReplayLimit      = 10000                   // Cắt tỉa Output Shell trần 10.000 ký tự
+	projectedShellStreamLimit      = 10000                   // 10.000 ký tự cho stdout/stderr
+	projectedShellInterleavedLimit = 10000                   // 10.000 ký tự cho interleaved output
+	projectedShellMaxLines         = 250                     // Trần 250 dòng
+	projectedShellHeadLines        = 100                     // Lấy 100 dòng đầu
+	projectedShellTailLines        = 50                      // Lấy 50 dòng cuối
 	projectedGrepReplayLimit       = 32 * projectedReplayKiB // Giữ nguyên 32KB ở lượt chạy hiện tại để đảm bảo AI KHÔNG bị tìm kiếm thiếu
 	projectedLsReplayLimit         = 10000                   // Cắt tỉa Output Ls/DirectoryList trần 10.000 ký tự
 	projectedEditReplayLimit       = 32 * projectedReplayKiB

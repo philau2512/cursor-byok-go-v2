@@ -423,6 +423,8 @@ func (service *Service) handleCompactionEvent(stream *ActiveStream, payload *str
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", err)
 	}
+	// Best-effort: trích memory durable từ handoff vừa compact (origin=auto).
+	service.captureMemoriesFromCompaction(stream, payload.SummaryText)
 	if err := service.syncSummaryCarryForward(stream.ConversationID, stream.RequestID, stream.CurrentModelCallID); err != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", err)

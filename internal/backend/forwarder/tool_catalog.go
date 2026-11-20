@@ -121,6 +121,8 @@ var agentModeToolNames = map[string]struct{}{
 	"WebFetch":             {},
 	"WebSearch":            {},
 	"Write":                {},
+	"SaveMemory":           {},
+	"SearchMemory":         {},
 }
 
 var multitaskModeToolNames = map[string]struct{}{
@@ -145,6 +147,8 @@ var multitaskModeToolNames = map[string]struct{}{
 	"WebFetch":             {},
 	"WebSearch":            {},
 	"Write":                {},
+	"SaveMemory":           {},
+	"SearchMemory":         {},
 }
 
 var debugModeToolNames = map[string]struct{}{
@@ -167,6 +171,8 @@ var debugModeToolNames = map[string]struct{}{
 	"WebFetch":             {},
 	"WebSearch":            {},
 	"Write":                {},
+	"SaveMemory":           {},
+	"SearchMemory":         {},
 }
 
 var askModeToolNames = map[string]struct{}{
@@ -189,6 +195,8 @@ var askModeToolNames = map[string]struct{}{
 	"WebFetch":             {},
 	"WebSearch":            {},
 	"Write":                {},
+	"SaveMemory":           {},
+	"SearchMemory":         {},
 }
 
 var planModeToolNames = map[string]struct{}{
@@ -212,6 +220,8 @@ var planModeToolNames = map[string]struct{}{
 	"WebFetch":             {},
 	"WebSearch":            {},
 	"Write":                {},
+	"SaveMemory":           {},
+	"SearchMemory":         {},
 }
 
 var childConversationDisallowedAgentToolNames = map[string]struct{}{
@@ -277,8 +287,6 @@ func isToolAllowedInMode(mode agentv1.AgentMode, subagentTypeName string, toolNa
 func isChildConversationSubagentTypeName(subagentTypeName string) bool {
 	return strings.TrimSpace(subagentTypeName) != ""
 }
-
-
 
 func toolAssetModeForConversation(mode agentv1.AgentMode, subagentTypeName string) (promptassets.Mode, error) {
 	if isChildConversationSubagentTypeName(subagentTypeName) {

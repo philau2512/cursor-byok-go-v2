@@ -18,6 +18,8 @@
     "WebSearch",
     "CreatePlan",
     "Write",
-    "GenerateImage"
+    "GenerateImage",
+    "SaveMemory",
+    "SearchMemory"
   ]
 }

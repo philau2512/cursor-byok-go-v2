@@ -108,3 +108,42 @@ func TestNormalizeConfigKeepsCommitMessageModelFields(t *testing.T) {
 		t.Fatal("new fields must default to empty")
 	}
 }
+
+func TestNormalizeConfigMemoryDefaults(t *testing.T) {
+	disabled := false
+	input := DefaultConfig()
+	input.MemoryEnabled = &disabled
+	input.MemoryAutoCapture = nil
+	input.MemoryOverviewMaxBytes = 100
+	normalized, err := NormalizeConfig(input)
+	if err != nil {
+		t.Fatalf("NormalizeConfig: %v", err)
+	}
+	if normalized.MemoryEnabled == nil || *normalized.MemoryEnabled {
+		t.Fatal("explicit false must survive normalize")
+	}
+	if normalized.MemoryAutoCapture != nil {
+		t.Fatal("nil flag must stay nil (default-true semantics)")
+	}
+	if normalized.MemoryOverviewMaxBytes != 512 {
+		t.Fatalf("low value must clamp to 512, got %d", normalized.MemoryOverviewMaxBytes)
+	}
+
+	high := DefaultConfig()
+	high.MemoryOverviewMaxBytes = 999999
+	highNormalized, err := NormalizeConfig(high)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if highNormalized.MemoryOverviewMaxBytes != 16384 {
+		t.Fatalf("high value must clamp to 16384, got %d", highNormalized.MemoryOverviewMaxBytes)
+	}
+
+	blank, err := NormalizeConfig(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blank.MemoryOverviewMaxBytes != 4096 {
+		t.Fatalf("unset must default to 4096, got %d", blank.MemoryOverviewMaxBytes)
+	}
+}

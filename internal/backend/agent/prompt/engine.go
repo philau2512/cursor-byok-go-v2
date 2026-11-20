@@ -1373,9 +1373,9 @@ func todoStatusLabel(status agentv1.TodoStatus) string {
 }
 
 // pruneHistoricalShellOutputs 扫描 prompt 消息流：
-// 1. Đối với các tin nhắn cách hiện tại >= turnThreshold (6) turns, các output của Shell có kích thước > 2.000 ký tự
-//    được thay thế bằng chuỗi tóm tắt nhỏ [Previous shell output of "<command>" truncated to save context].
-// 2. Đối với các output Shell gần đây, áp dụng bộ lọc cắt tỉa Output Shell nếu vượt quá 10.000 ký tự hoặc 250 dòng.
+//  1. Đối với các tin nhắn cách hiện tại >= turnThreshold (6) turns, các output của Shell có kích thước > 2.000 ký tự
+//     được thay thế bằng chuỗi tóm tắt nhỏ [Previous shell output of "<command>" truncated to save context].
+//  2. Đối với các output Shell gần đây, áp dụng bộ lọc cắt tỉa Output Shell nếu vượt quá 10.000 ký tự hoặc 250 dòng.
 func pruneHistoricalShellOutputs(messages []Message, turnThreshold int) []Message {
 	if len(messages) == 0 {
 		return messages

@@ -744,6 +744,99 @@
         }
       },
       "type": "function"
+    },
+    {
+      "function": {
+        "name": "SaveMemory",
+        "description": "Persist a durable project memory for future conversations in this workspace. EVERY call MUST include ALL FOUR required fields: title, category, content, origin — omitting ANY of them fails the save and wastes a retry.\n\nSave ONLY when the information is stable beyond the current task: a user-stated preference or correction, a verified pitfall with root cause, an architectural decision with rationale, or a build/test/environment fact confirmed by execution. Do NOT save: secrets/credentials, task-local progress, speculation, or anything already in AGENTS.md/rules files. If a similar memory exists, SearchMemory first and re-save with the SAME title to update it.\n\nField rules:\n- title (REQUIRED): 3-10 words, 3-100 characters, a short stable NAME like \"Order Delivery Status Conventions\" — not a sentence, never merged into content. It is the upsert key.\n- category (REQUIRED): one enum value; pick the most specific.\n- content (REQUIRED): 1-4000 chars, declarative, self-contained (readable without this conversation). Include exact commands/paths when relevant.\n- origin (REQUIRED): \"user\" only when the user explicitly asked to remember this; otherwise \"model\". The value \"auto\" is reserved for system capture and is rejected.\n- keywords: 0-8 short noun phrases. usage_scenario: 0-3, each <=160 chars, phrased as \"When <situation>, <action>\".",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "REQUIRED. Short stable name for the memory, 3-10 words (3-100 characters), e.g. \"Order Delivery Status Conventions\". Used as the upsert/dedup key. NEVER omit it and NEVER write the memory body here."
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "project_tech_stack",
+                "project_build_configuration",
+                "project_environment_configuration",
+                "project_architecture",
+                "development_code_specification",
+                "development_practice_specification",
+                "development_test_specification",
+                "common_pitfalls_experience",
+                "important_decision_experience",
+                "task_experience",
+                "user_behavior",
+                "user_communication"
+              ]
+            },
+            "content": {
+              "type": "string",
+              "description": "The durable fact/lesson itself, self-contained, 1-4000 chars. Never include credentials."
+            },
+            "keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8
+            },
+            "usage_scenario": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 3
+            },
+            "origin": {
+              "type": "string",
+              "enum": [
+                "user",
+                "model"
+              ]
+            }
+          },
+          "required": [
+            "title",
+            "category",
+            "content",
+            "origin"
+          ]
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "name": "SearchMemory",
+        "description": "Retrieve persisted project memories for this workspace. Use BEFORE asking the user about conventions, past decisions, build/test commands, or known pitfalls, and before re-investigating something that may already be recorded. An empty query returns the full memory overview tree (titles + keywords). Results are ranked; each item includes the memory file path for audit.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Keywords or a short question. Empty = overview."
+            },
+            "category": {
+              "type": "string",
+              "description": "Optional category filter; one of the SaveMemory categories."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 5
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      "type": "function"
     }
   ]
 }

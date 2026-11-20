@@ -126,6 +126,37 @@ func (manager *Manager) LastExplorerModelHash() string {
 	return strings.TrimSpace(manager.Current().LastExplorerModelHash)
 }
 
+// MemoryEnabled bật/tắt toàn bộ project memory; nil (chưa cấu hình) = bật.
+func (manager *Manager) MemoryEnabled() bool {
+	if manager == nil {
+		return true
+	}
+	return memoryFlagDefaultTrue(manager.Current().MemoryEnabled)
+}
+
+// MemoryAutoCapture bật/tắt trích memory tự động từ compaction; nil = bật.
+func (manager *Manager) MemoryAutoCapture() bool {
+	if manager == nil {
+		return true
+	}
+	return memoryFlagDefaultTrue(manager.Current().MemoryAutoCapture)
+}
+
+// MemoryOverviewMaxBytes trả ngân sách byte cho overview block (đã clamp).
+func (manager *Manager) MemoryOverviewMaxBytes() int {
+	if manager == nil {
+		return memoryOverviewDefaultBytes
+	}
+	return normalizeMemoryOverviewMaxBytes(manager.Current().MemoryOverviewMaxBytes)
+}
+
+func memoryFlagDefaultTrue(value *bool) bool {
+	if value == nil {
+		return true
+	}
+	return *value
+}
+
 func (manager *Manager) SaveLastExplorerModelHash(ctx context.Context, value string) error {
 	if manager == nil {
 		return fmt.Errorf("config manager is not initialized")

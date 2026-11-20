@@ -30,6 +30,7 @@ import (
 	modeladapter "cursor/internal/backend/agent/model"
 	promptengine "cursor/internal/backend/agent/prompt"
 	protocol "cursor/internal/backend/agent/protocol"
+	"cursor/internal/memory"
 )
 
 const (
@@ -310,6 +311,16 @@ type Service struct {
 	// RunRequest/PrewarmRequest — commit message đọc live y như routing của Task subagent.
 	subagentOverridesMu          sync.Mutex
 	latestSubagentModelOverrides map[string]runtimecore.SubagentModelOverrideSelection
+	// memoryStore + memoryConfig phục vụ project memory (tools, overview, capture).
+	memoryStore  *memory.Store
+	memoryConfig projectMemoryConfig
+}
+
+// projectMemoryConfig là seam tới config.Manager cho tính năng project memory.
+type projectMemoryConfig interface {
+	MemoryEnabled() bool
+	MemoryAutoCapture() bool
+	MemoryOverviewMaxBytes() int
 }
 
 type agentModelMemory interface {
@@ -335,7 +346,14 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 	if candidate, ok := resolver.(debugLogConfig); ok {
 		debugConfig = candidate
 	}
+	memoryStore := memory.NewStore(appdata.MemoriesRootPath())
+	var memoryConfig projectMemoryConfig
+	if candidate, ok := resolver.(projectMemoryConfig); ok {
+		memoryConfig = candidate
+	}
 	debug := newDebugRecorder(historyRoot, broker, debugConfig)
+	promptCompiler := NewPromptCompiler(projector, NewToolCatalog(), NewReminderInjector(), rules, contentBlobs)
+	promptCompiler.SetMemoryDependencies(memoryStore, memoryConfig)
 	service := &Service{
 		store:              store,
 		contentBlobs:       contentBlobs,
@@ -344,7 +362,7 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 		docsIndexStore:     NewDocsIndexStore(appdata.DocsIndexRootPath()),
 		rules:              rules,
 		projector:          projector,
-		compiler:           NewPromptCompiler(projector, NewToolCatalog(), NewReminderInjector(), rules, contentBlobs),
+		compiler:           promptCompiler,
 		provider:           NewProviderGateway(resolver),
 		resolver:           resolver,
 		modelMemory:        modelMemory,
@@ -354,6 +372,8 @@ func NewService(historyRoot string, resolver modeladapter.ChannelResolver) *Serv
 		execBridge:         execbridge.NewBridge(),
 		interactionBridge:  interactionbridge.NewBridge(),
 		appendSeq:          newAppendSequenceTracker(),
+		memoryStore:        memoryStore,
+		memoryConfig:       memoryConfig,
 	}
 	service.startHistoryMaintenance()
 	return service
@@ -1118,6 +1138,7 @@ func (service *Service) handleCancelIntent(intent InboundIntent) error {
 	stream.PendingProviderAction = providerActionNone
 	stream.PendingCompaction = nil
 	stream.PatchEditQueues = make(map[string][]queuedPatchEditOperation)
+	stream.MemorySaveCount = 0
 	stream.UpdatedAt = time.Now().UTC()
 	stream.mu.Unlock()
 	for _, pending := range pendingExecs {
