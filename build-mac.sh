@@ -11,9 +11,19 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-for cmd in go task; do
+# Ensure Go user bin dir is on PATH (wails3 etc. installed via `go install`).
+export PATH="$HOME/go/bin:$PATH"
+
+for cmd in go task wails3 yarn protoc; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "ERROR: '$cmd' not found in PATH. Install it first (e.g. brew install go go-task)." >&2
+    case "$cmd" in
+      wails3)  hint="go install github.com/wailsapp/wails/v3/cmd/wails3@latest" ;;
+      task)    hint="brew install go-task" ;;
+      yarn)    hint="corepack enable || npm i -g yarn" ;;
+      protoc)  hint="brew install protobuf" ;;
+      *)       hint="brew install go" ;;
+    esac
+    echo "ERROR: '$cmd' not found in PATH. Install it first: $hint" >&2
     exit 1
   fi
 done
