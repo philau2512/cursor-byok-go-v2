@@ -108,7 +108,7 @@ func TestQueueMessageEdgeCases_BuildRunEntriesStructure(t *testing.T) {
 		RequestContext: &agentv1.RequestContext{},
 	}
 
-	entries, err := buildRunEntries(intent, agentv1.AgentMode_AGENT_MODE_AGENT, 3)
+	entries, err := buildRunEntries(intent, agentv1.AgentMode_AGENT_MODE_AGENT, 3, nil)
 	if err != nil {
 		t.Fatalf("buildRunEntries failed: %v", err)
 	}

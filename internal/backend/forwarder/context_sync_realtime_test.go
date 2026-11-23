@@ -39,7 +39,7 @@ func TestExtractRequestContextFromDynamicContextAndLegacy(t *testing.T) {
 		},
 	}
 
-	extracted := extractRequestContext(msg)
+	extracted := extractRequestContext(msg, &prefetchedBlobCache{})
 	if extracted == nil {
 		t.Fatal("expected non-nil extracted request context")
 	}

@@ -307,6 +307,9 @@ type Service struct {
 	interactionBridge  interactionbridge.InteractionBridge
 	appendSeq          *appendSequenceTracker
 	runSerializers     sync.Map
+	// prefetchedBlobs lưu blob nội dung (rules/skills/subagents/mcps) mà client gửi kèm
+	// run_request để các message sau chỉ còn tham chiếu theo blob id.
+	prefetchedBlobs prefetchedBlobCache
 	// subagentOverridesMu bảo vệ snapshot overrides mới nhất mà client gửi lên qua
 	// RunRequest/PrewarmRequest — commit message đọc live y như routing của Task subagent.
 	subagentOverridesMu          sync.Mutex
@@ -714,9 +717,10 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.ConversationID = conversationID
 		intent.ConversationState = runRequest.GetConversationState()
 		intent.PreFetchedBlobs = runRequest.GetPreFetchedBlobs()
+		service.prefetchedBlobs.remember(intent.PreFetchedBlobs)
 		intent.UserMessage = extractUserMessage(message)
 		intent.PrependUserMessages = extractPrependUserMessages(message)
-		intent.RequestContext = extractRequestContext(message)
+		intent.RequestContext = extractRequestContext(message, &service.prefetchedBlobs)
 		if service.shouldIgnoreEmptyResumeRunRequest(requestID, runRequest, intent.UserMessage, intent.RequestContext) {
 			intent.Kind = "metadata"
 			intent.StartsRun = false
@@ -780,6 +784,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		intent.SubagentTypeName = strings.TrimSpace(prewarmRequest.GetSubagentTypeName())
 		intent.ConversationState = prewarmRequest.GetConversationState()
 		intent.PreFetchedBlobs = prewarmRequest.GetPreFetchedBlobs()
+		service.prefetchedBlobs.remember(intent.PreFetchedBlobs)
 		intent.Mode, intent.ModeSource, intent.HasExplicitMode, err = extractPrewarmMode(prewarmRequest)
 		if err != nil {
 			return InboundIntent{}, err
@@ -812,7 +817,7 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		}
 		intent.UserMessage = extractConversationActionUserMessage(action)
 		intent.PrependUserMessages = extractConversationActionPrependUserMessages(action)
-		intent.RequestContext = extractConversationActionRequestContext(action)
+		intent.RequestContext = extractConversationActionRequestContext(action, &service.prefetchedBlobs)
 		intent.StartsRun = conversationActionStartsRun(action)
 		intent.Mode, intent.ModeSource, intent.HasExplicitMode, err = extractConversationActionMode(action)
 		if err != nil {
@@ -961,7 +966,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 	if rewindDecision.Apply {
 		service.logRunRewindDecision(intent.RequestID, intent.ConversationID, "rewind_detected", rewindDecision)
 		turnSeq = rewindDecision.TargetTurnSeq
-		initialEntries, err = buildRunEntries(intent, effectiveMode, turnSeq)
+		initialEntries, err = buildRunEntries(intent, effectiveMode, turnSeq, rewindDecision.PrefixEntries)
 		if err != nil {
 			return err
 		}
@@ -977,7 +982,7 @@ func (service *Service) handleRunIntent(intent InboundIntent) error {
 		if targetUser != intent.UserMessage || len(remainingPrepends) != len(intent.PrependUserMessages) {
 			intent.UserMessage = targetUser
 			intent.PrependUserMessages = remainingPrepends
-			initialEntries, err = buildRunEntries(intent, effectiveMode, turnSeq)
+			initialEntries, err = buildRunEntries(intent, effectiveMode, turnSeq, conversation.Entries)
 			if err != nil {
 				return err
 			}
@@ -2931,10 +2936,14 @@ func (service *Service) failActiveStream(stream *ActiveStream, conversationID st
 }
 
 // buildRunEntries 构造一次 run intent 需要写入 history 的首批 entry。
-func buildRunEntries(intent InboundIntent, effectiveMode agentv1.AgentMode, turnSeq int64) ([]HistoryEntry, error) {
+// historyEntries 有两个用途：判断本 turn 是否该落完整 static context，以及把此前 entry 中的
+// MCP descriptors 前推到本 turn 的 entry，避免 auto-compaction 后 model-visible history 永久缺失
+// <mcp_file_system>/<mcp_meta_tools>。
+func buildRunEntries(intent InboundIntent, effectiveMode agentv1.AgentMode, turnSeq int64, historyEntries []HistoryEntry) ([]HistoryEntry, error) {
 	entries := make([]HistoryEntry, 0, 4)
 	if intent.RequestContext != nil {
-		normalized := normalizeRequestContextForStorageMode(intent.RequestContext, turnSeq == 1)
+		requestContext := carryForwardMCPOptions(intent.RequestContext, historyEntries)
+		normalized := normalizeRequestContextForStorageMode(requestContext, shouldPersistStaticRequestContext(historyEntries))
 		if normalized != nil {
 			payload, err := protojson.Marshal(normalized)
 			if err != nil {
@@ -3183,7 +3192,9 @@ func extractPrependUserMessages(message *agentv1.AgentClientMessage) []*agentv1.
 
 // extractRequestContext 提取 request_context，优先兼容现代 Cursor 的 RequestContextParts.DynamicContext，
 // 并与 action 中可能包含的 legacy context 自动做防御性合并。
-func extractRequestContext(message *agentv1.AgentClientMessage) *agentv1.RequestContext {
+// parts 中以 blob id 引用、内容放在 pre_fetched_blobs 的部分（rules/skills/subagents/mcps）
+// 也在这里还原，否则 MCP descriptors 会在入口处直接丢失。
+func extractRequestContext(message *agentv1.AgentClientMessage, blobs *prefetchedBlobCache) *agentv1.RequestContext {
 	if message == nil || message.GetRunRequest() == nil || message.GetRunRequest().GetAction() == nil {
 		return nil
 	}
@@ -3201,15 +3212,10 @@ func extractRequestContext(message *agentv1.AgentClientMessage) *agentv1.Request
 		legacyContext = item.ExecutePlanAction.GetRequestContext()
 	}
 
-	parts := action.GetRequestContextParts()
-	if parts != nil && parts.GetDynamicContext() != nil {
-		dynamic := parts.GetDynamicContext()
-		if legacyContext == nil {
-			return dynamic
-		}
-		return mergeRequestContexts(dynamic, legacyContext)
-	}
-	return legacyContext
+	return applyRunRequestContextDefaults(
+		requestContextFromAction(action, legacyContext, blobs),
+		message.GetRunRequest(),
+	)
 }
 
 func mergeRequestContexts(dynamic *agentv1.RequestContext, legacy *agentv1.RequestContext) *agentv1.RequestContext {
@@ -3375,22 +3381,40 @@ func extractConversationActionPrependUserMessages(action *agentv1.ConversationAc
 	}
 }
 
-func extractConversationActionRequestContext(action *agentv1.ConversationAction) *agentv1.RequestContext {
+func extractConversationActionRequestContext(action *agentv1.ConversationAction, blobs *prefetchedBlobCache) *agentv1.RequestContext {
 	if action == nil {
 		return nil
 	}
+	var legacyContext *agentv1.RequestContext
 	switch item := action.GetAction().(type) {
 	case *agentv1.ConversationAction_UserMessageAction:
-		return item.UserMessageAction.GetRequestContext()
+		legacyContext = item.UserMessageAction.GetRequestContext()
 	case *agentv1.ConversationAction_ResumeAction:
-		return item.ResumeAction.GetRequestContext()
+		legacyContext = item.ResumeAction.GetRequestContext()
 	case *agentv1.ConversationAction_StartPlanAction:
-		return item.StartPlanAction.GetRequestContext()
+		legacyContext = item.StartPlanAction.GetRequestContext()
 	case *agentv1.ConversationAction_ExecutePlanAction:
-		return item.ExecutePlanAction.GetRequestContext()
+		legacyContext = item.ExecutePlanAction.GetRequestContext()
 	default:
 		return nil
 	}
+	return requestContextFromAction(action, legacyContext, blobs)
+}
+
+// requestContextFromAction hợp nhất payload động (request_context_parts.dynamic_context) với
+// legacy context của action, rồi khôi phục các phần đang nằm trong blob tham chiếu.
+func requestContextFromAction(action *agentv1.ConversationAction, legacyContext *agentv1.RequestContext, blobs *prefetchedBlobCache) *agentv1.RequestContext {
+	parts := action.GetRequestContextParts()
+	if parts == nil {
+		return resolveRequestContextPartReferences(nil, blobs, legacyContext)
+	}
+	if dynamic := parts.GetDynamicContext(); dynamic != nil {
+		if legacyContext != nil {
+			dynamic = mergeRequestContexts(dynamic, legacyContext)
+		}
+		return resolveRequestContextPartReferences(parts, blobs, dynamic)
+	}
+	return resolveRequestContextPartReferences(parts, blobs, legacyContext)
 }
 
 func conversationActionIsResume(action *agentv1.ConversationAction) bool {
