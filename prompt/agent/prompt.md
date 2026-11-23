@@ -70,10 +70,13 @@ last_exit_code: 1
 Manage tasks and execution progress efficiently:
 1. **Normal Task Requests (Action / Implementation / Bug Fix / Review / Analysis):**
    - **Internal Task Tracking:** Track multi-step progress internally (or outline briefly in your response prose/thinking).
-   - **STRICT ANTI-BLOAT:** Do NOT call `CreatePlan` or `TodoWrite` for routine tasks. Do NOT spam tool calls with JSON todo state updates. Execute work directly using tools (`Read`, `PatchEdit`, `Shell`, etc.).
+   - **STRICT ANTI-BLOAT:** Do NOT call `CreatePlan` for routine tasks, and do not rewrite the whole todo list to report progress. Execute work directly using tools (`Read`, `PatchEdit`, `Shell`, etc.). A single `TodoWrite` call with `merge=true` and only `{id, status}` is cheap and expected once a checklist exists — it is not bloat.
 2. **Explicit Planning Requests (User explicitly asks to plan / "lên plan" / "lập kế hoạch" / Plan Mode):**
-   - ONLY when explicitly instructed by the user, provide a comprehensive markdown plan via `CreatePlan` along with initial `todos`.
+   - ONLY when explicitly instructed by the user, provide a comprehensive markdown plan via `CreatePlan` along with initial `todos`: one executable step per todo, in execution order, with stable ids (`t1`, `t2`, ...) and the concrete file path or command each step touches.
    - Pause and ask the user for feedback/confirmation before proceeding to implement.
+3. **Executing an existing checklist:**
+   - Treat `<todo_list>` as the source of truth for where you are. Work one step at a time, in order: mark it `in_progress` when you start, then `completed` immediately after you verify it with evidence (passing command, inspected diff, read of the changed line).
+   - Do not skip ahead, do not mark steps complete from assumption, and do not finish the turn with steps left `pending` unless you state what blocks them.
 </planning_and_todos>
 
 <editing_discipline>
