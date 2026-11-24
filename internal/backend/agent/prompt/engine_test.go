@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
 
@@ -270,14 +271,20 @@ func TestHydrateLocalMCPDescriptorsFullDescription(t *testing.T) {
 	if !strings.Contains(prompt, "<mcp_file_system>") {
 		t.Fatal("compiled prompt missing <mcp_file_system>")
 	}
+	if !strings.Contains(prompt, "Proactively check and prefer these MCP tools") {
+		t.Fatal("compiled prompt missing proactive MCP discovery rule")
+	}
 	if !strings.Contains(prompt, `<mcp_tool name="InspectChanges">`) {
 		t.Fatal("compiled prompt missing InspectChanges tool")
 	}
-	if !strings.Contains(prompt, "<description>Inspects uncommitted Git changes (status and diff) with structured summaries.</description>") {
-		t.Fatal("compiled prompt missing hydrated full description for InspectChanges")
+	if !strings.Contains(prompt, "<definition_path>"+escapePromptXML(toolDefPath)+"</definition_path>") {
+		t.Fatal("compiled prompt missing definition_path for InspectChanges")
 	}
-	if !strings.Contains(prompt, `<input_schema>{&quot;properties&quot;:{&quot;path&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;path&quot;],&quot;type&quot;:&quot;object&quot;}</input_schema>`) {
-		t.Fatal("compiled prompt should inline compact input_schema with required params")
+	if !strings.Contains(prompt, "<description>Inspects uncommitted Git changes (status and diff) with structured summaries.</description>") {
+		t.Fatal("compiled prompt missing hydrated summary description for InspectChanges")
+	}
+	if strings.Contains(prompt, "<input_schema>") {
+		t.Fatal("compiled prompt should defer input_schema when readable definition_path exists on disk")
 	}
 	if !strings.Contains(prompt, `<mcp_tool name="fast_context_search">`) {
 		t.Fatal("compiled prompt missing fast_context_search tool")
@@ -287,7 +294,7 @@ func TestHydrateLocalMCPDescriptorsFullDescription(t *testing.T) {
 	}
 }
 
-func TestHydrateLocalMCPDescriptorsPreservesDescriptionAndInlinesSchema(t *testing.T) {
+func TestHydrateLocalMCPDescriptorsDefersSchemaWhenDefinitionFileExists(t *testing.T) {
 	tempDir := t.TempDir()
 	toolDefPath := filepath.Join(tempDir, "query.json")
 	toolJSON := `{
@@ -317,9 +324,10 @@ func TestHydrateLocalMCPDescriptorsPreservesDescriptionAndInlinesSchema(t *testi
 						ServerName:       "gridex",
 						Tools: []*agentv1.McpToolDescriptor{
 							{
-								ToolName:       "query",
-								Description:    proto.String("Pre-existing client description"),
-								DefinitionPath: proto.String(toolDefPath),
+								ToolName:        "query",
+								Description:     proto.String("Pre-existing client description.\n\nLong second paragraph that should be deferred."),
+								DefinitionPath:  proto.String(toolDefPath),
+								InputSchemaJson: proto.String(`{"type":"object","properties":{"sql":{"type":"string"}}}`),
 							},
 						},
 					},
@@ -337,11 +345,17 @@ func TestHydrateLocalMCPDescriptorsPreservesDescriptionAndInlinesSchema(t *testi
 	}
 	prompt := strings.Join(joined, "\n")
 
-	if !strings.Contains(prompt, "<description>Pre-existing client description</description>") {
-		t.Fatal("compiled prompt should preserve pre-existing client description")
+	if !strings.Contains(prompt, "<description>Pre-existing client description.</description>") {
+		t.Fatal("compiled prompt should keep concise first-paragraph summary description")
 	}
-	if !strings.Contains(prompt, `<input_schema>{&quot;properties&quot;:{&quot;sql&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}</input_schema>`) {
-		t.Fatal("compiled prompt should hydrate compact input_schema from definition file even when client already provided description")
+	if strings.Contains(prompt, "Long second paragraph") {
+		t.Fatal("compiled prompt should defer multi-paragraph description when definition_path exists")
+	}
+	if strings.Contains(prompt, "<input_schema>") {
+		t.Fatal("compiled prompt should defer input_schema when definition_path exists on disk")
+	}
+	if !strings.Contains(prompt, "<definition_path>"+escapePromptXML(toolDefPath)+"</definition_path>") {
+		t.Fatal("compiled prompt missing definition_path for deferred MCP tool")
 	}
 }
 
@@ -811,5 +825,16 @@ func TestBuildRequestContextReplayMessagesDeduplicated(t *testing.T) {
 	}
 	if !strings.Contains(msgs3[0].Content, "Always be concise and accurate.") {
 		t.Fatalf("turn 3 missing updated rule content: %s", msgs3[0].Content)
+	}
+}
+
+func TestSummarizeMCPToolDescriptionPreservesUTF8(t *testing.T) {
+	desc := strings.Repeat("Tiếng Việt có dấu — ", 15)
+	got := summarizeMCPToolDescription(desc, 40)
+	if !utf8.ValidString(got) {
+		t.Fatalf("summarizeMCPToolDescription produced invalid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected ellipsis suffix, got %q", got)
 	}
 }

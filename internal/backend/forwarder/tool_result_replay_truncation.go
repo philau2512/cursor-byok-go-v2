@@ -10,7 +10,7 @@ import (
 const (
 	projectedReplayKiB = 1024
 
-	projectedReadReplayLimit       = 64 * projectedReplayKiB
+	projectedReadReplayLimit       = 24 * projectedReplayKiB
 	projectedShellReplayLimit      = 10000                   // Cắt tỉa Output Shell trần 10.000 ký tự
 	projectedShellStreamLimit      = 10000                   // 10.000 ký tự cho stdout/stderr
 	projectedShellInterleavedLimit = 10000                   // 10.000 ký tự cho interleaved output
@@ -19,14 +19,18 @@ const (
 	projectedShellTailLines        = 50                      // Lấy 50 dòng cuối
 	projectedGrepReplayLimit       = 32 * projectedReplayKiB // Giữ nguyên 32KB ở lượt chạy hiện tại để đảm bảo AI KHÔNG bị tìm kiếm thiếu
 	projectedLsReplayLimit         = 10000                   // Cắt tỉa Output Ls/DirectoryList trần 10.000 ký tự
-	projectedEditReplayLimit       = 32 * projectedReplayKiB
-	projectedPatchEditReplayLimit  = 32 * projectedReplayKiB
+	projectedEditReplayLimit       = 8 * projectedReplayKiB
+	projectedPatchEditReplayLimit  = 8 * projectedReplayKiB
 	projectedWebFetchReplayLimit   = 32 * projectedReplayKiB
 	projectedWebSearchReplayLimit  = 16 * projectedReplayKiB
 	projectedMcpReplayLimit        = 32 * projectedReplayKiB
 )
 
 func limitProjectedToolResultReplay(toolName string, content string, resultText string, fromStoredToolCall bool, historical bool) string {
+	return limitProjectedToolResultReplayWithOptions(toolName, content, resultText, fromStoredToolCall, historical, historical)
+}
+
+func limitProjectedToolResultReplayWithOptions(toolName string, content string, resultText string, fromStoredToolCall bool, historical bool, pruneShellAndLs bool) string {
 	if compacted, ok := compactProjectedGenerateImageResultReplay(toolName, content, resultText); ok {
 		return compacted
 	}
@@ -35,10 +39,10 @@ func limitProjectedToolResultReplay(toolName string, content string, resultText 
 			content = compacted
 			fromStoredToolCall = false
 		}
-		if (toolName == "Shell" || strings.EqualFold(toolName, "shell")) && len(content) > 2000 {
+		if pruneShellAndLs && (toolName == "Shell" || strings.EqualFold(toolName, "shell")) && len(content) > 2000 {
 			return "[Previous shell output truncated to save context]"
 		}
-		if (toolName == "Ls" || strings.EqualFold(toolName, "ls") || toolName == "DirectoryList") && len(content) > 2000 {
+		if pruneShellAndLs && (toolName == "Ls" || strings.EqualFold(toolName, "ls") || toolName == "DirectoryList") && len(content) > 2000 {
 			return "[Previous directory listing truncated to save context]"
 		}
 		if (toolName == "Read" || strings.EqualFold(toolName, "read")) && len(content) > 2000 {

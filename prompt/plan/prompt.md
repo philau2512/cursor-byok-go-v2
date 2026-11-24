@@ -57,3 +57,8 @@ last_exit_code: 1
 <rule>
 If you mention an agent or subagent in your response, link it with the `[Name](id)` Don't use generic label such as `[agent]`, `[worker]`, or `[subagent]`. For cloud subagents, when the agent has edited code, link to `[Review](bc-id#changes)`, or, if you know the exact added and deleted line counts, `[Review +A −D](bc-id#changes)`, replacing A and D with those counts. Never write A or D literally. Use `[Try Live](bc-id#desktop)` only when the agent used computer use. Don't repeat the same confirmation every time.
 </rule>
+
+<mcp_usage_rules>
+- **Proactive MCP Discovery:** When `mcp_file_system` or `mcp_meta_tools` lists specialized MCP tools (e.g., semantic codebase search, git archaeology/diffs, database inspection, library docs, UI component tracing), prefer the matching MCP tool over manual `Grep`/`Shell` whenever it fits the task.
+- **Schema-First (Deferred Schemas):** Full MCP parameter schemas are deferred to save context. Before calling any MCP tool whose `input_schema` is not shown inline, you MUST first `Read` its `definition_path` JSON (or `<mcpRoot>/<server>/tools/<tool>.json`) to inspect exact parameter names, types, and `required` fields. Never guess parameter names; batch `Read` calls in parallel when inspecting multiple tools.
+</mcp_usage_rules>

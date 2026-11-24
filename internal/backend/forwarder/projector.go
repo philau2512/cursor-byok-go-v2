@@ -76,12 +76,13 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 		return nil, nil
 	}
 	entries := replayablePromptProjectionEntries(conversation.Entries)
+	priorToolCallDistances := computeHistoricalToolResultDistances(conversation, entries)
 	messages := make([]modeladapter.Message, 0, len(entries)*2)
 	seenToolCalls := make(map[string]struct{})
 	openToolCalls := make(map[string]struct{})
 	toolCallMessageIndexes := make(map[string]int)
 	var lastEmittedStaticRequestContext string
-	for _, entry := range entries {
+	for entryIndex, entry := range entries {
 		switch strings.TrimSpace(entry.Kind) {
 		case "model_message":
 			var payload modelMessageEntryPayload
@@ -211,79 +212,35 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 				if isLegacyPlainWriteReplay(toolName, len(payload.ToolCall) > 0) {
 					continue
 				}
-				if (toolName == "Shell" || strings.EqualFold(toolName, "shell")) && isHistoricalReplayToolResultDistance(conversation, entry, 6) {
-					contentToTest := payload.ResultText
-					if toolCall != nil {
-						if replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall); ok {
-							contentToTest = replayMessage.Content
-						}
-					}
-					if len(contentToTest) > 2000 {
-						cmd := extractShellCommandFromArgs(payload.Arguments)
-						if len(cmd) > 60 {
-							cmd = cmd[:60] + "..."
-						}
-						prunedText := "[Previous shell output truncated to save context]"
-						if cmd != "" {
-							prunedText = fmt.Sprintf("[Previous shell output of %q truncated to save context]", cmd)
-						}
-						messages = append(messages, modeladapter.Message{
-							Role:       "tool",
-							Name:       toolName,
-							ToolCallID: toolCallID,
-							Content:    prunedText,
-						})
-						continue
-					}
-				}
-				if (toolName == "Ls" || strings.EqualFold(toolName, "ls") || toolName == "DirectoryList") && isHistoricalReplayToolResultDistance(conversation, entry, 6) {
-					contentToTest := payload.ResultText
-					if toolCall != nil {
-						if replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall); ok {
-							contentToTest = replayMessage.Content
-						}
-					}
-					if len(contentToTest) > 2000 {
-						messages = append(messages, modeladapter.Message{
-							Role:       "tool",
-							Name:       toolName,
-							ToolCallID: toolCallID,
-							Content:    "[Previous directory listing truncated to save context]",
-						})
-						continue
-					}
-				}
-				if (toolName == "Grep" || strings.EqualFold(toolName, "grep")) && isHistoricalReplayToolResultDistance(conversation, entry, 2) {
-					contentToTest := payload.ResultText
-					if toolCall != nil {
-						if replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall); ok {
-							contentToTest = replayMessage.Content
-						}
-					}
-					if len(contentToTest) > 2000 {
-						messages = append(messages, modeladapter.Message{
-							Role:       "tool",
-							Name:       toolName,
-							ToolCallID: toolCallID,
-							Content:    "[Previous grep output truncated to save context]",
-						})
-						continue
-					}
-				}
+				contentToTest := payload.ResultText
+				var replayMessage promptengine.Message
+				hasReplayMessage := false
 				if toolCall != nil {
-					replayMessage, ok := promptengine.BuildToolResultReplayMessage(toolCallID, toolCall)
-					if ok {
-						replayMessage.Name = toolName
-						replayMessage.Content = limitProjectedToolResultReplay(toolName, replayMessage.Content, payload.ResultText, true, historicalToolResult)
-						messages = append(messages, toModelMessage(replayMessage))
-						continue
+					replayMessage, hasReplayMessage = promptengine.BuildToolResultReplayMessage(toolCallID, toolCall)
+					if hasReplayMessage {
+						contentToTest = replayMessage.Content
 					}
+				}
+				if prunedText, pruned := historicalToolResultPruneStub(conversation, entry, entryIndex, priorToolCallDistances, toolName, contentToTest, payload.Arguments); pruned {
+					messages = append(messages, modeladapter.Message{
+						Role:       "tool",
+						Name:       toolName,
+						ToolCallID: toolCallID,
+						Content:    prunedText,
+					})
+					continue
+				}
+				if hasReplayMessage {
+					replayMessage.Name = toolName
+					replayMessage.Content = limitProjectedToolResultReplayWithOptions(toolName, replayMessage.Content, payload.ResultText, true, historicalToolResult, false)
+					messages = append(messages, toModelMessage(replayMessage))
+					continue
 				}
 				messages = append(messages, modeladapter.Message{
 					Role:       "tool",
 					Name:       toolName,
 					ToolCallID: toolCallID,
-					Content:    limitProjectedToolResultReplay(toolName, payload.ResultText, "", false, historicalToolResult),
+					Content:    limitProjectedToolResultReplayWithOptions(toolName, payload.ResultText, "", false, historicalToolResult, false),
 				})
 				continue
 			}
@@ -312,7 +269,11 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 				for _, replay := range replayMessages {
 					if strings.TrimSpace(replay.Role) == "tool" {
 						toolName := firstNonEmpty(strings.TrimSpace(replay.Name), strings.TrimSpace(payload.ToolName))
-						replay.Content = limitProjectedToolResultReplay(toolName, replay.Content, payload.ResultText, true, historicalToolResult)
+						if prunedText, pruned := historicalToolResultPruneStub(conversation, entry, entryIndex, priorToolCallDistances, toolName, replay.Content, payload.Arguments); pruned {
+							replay.Content = prunedText
+						} else {
+							replay.Content = limitProjectedToolResultReplayWithOptions(toolName, replay.Content, payload.ResultText, true, historicalToolResult, false)
+						}
 					}
 					messages = append(messages, toModelMessage(replay))
 				}
@@ -331,6 +292,10 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 			effectiveArguments := firstNonEmpty(strings.TrimSpace(payload.Arguments), "{}")
 			if isLegacyPatchEditToolName(payload.ToolName) {
 				effectiveArguments = "{}"
+			}
+			toolContent := limitProjectedToolResultReplayWithOptions(payload.ToolName, payload.ResultText, "", false, historicalToolResult, false)
+			if prunedText, pruned := historicalToolResultPruneStub(conversation, entry, entryIndex, priorToolCallDistances, payload.ToolName, payload.ResultText, payload.Arguments); pruned {
+				toolContent = prunedText
 			}
 			messages = append(messages,
 				modeladapter.Message{
@@ -357,7 +322,7 @@ func (projector *HistoryProjector) ProjectPromptReplay(conversation *Conversatio
 					Role:       "tool",
 					Name:       effectiveToolName,
 					ToolCallID: strings.TrimSpace(payload.ToolCallID),
-					Content:    limitProjectedToolResultReplay(payload.ToolName, payload.ResultText, "", false, historicalToolResult),
+					Content:    toolContent,
 				},
 			)
 		}
@@ -598,6 +563,121 @@ func isHistoricalReplayToolResultDistance(conversation *ConversationFile, entry 
 	}
 	currentTurnSeq := conversation.NextTurnSeq - 1
 	return currentTurnSeq > 0 && (currentTurnSeq-entry.TurnSeq) >= threshold
+}
+
+// computeHistoricalToolResultDistances tính khoảng cách theo số lượng tool_result đã hoàn tất
+// trước ranh giới turn hiện tại (entry.TurnSeq < currentTurnSeq). Vì chỉ đếm các turn đã đóng,
+// khoảng cách này bất biến trong suốt mọi provider pass của turn hiện tại -> giữ nguyên prefix cache.
+func computeHistoricalToolResultDistances(conversation *ConversationFile, entries []HistoryEntry) map[int]int64 {
+	if conversation == nil || len(entries) == 0 {
+		return nil
+	}
+	currentTurnSeq := conversation.NextTurnSeq - 1
+	if currentTurnSeq <= 0 {
+		return nil
+	}
+	historicalIndexes := make([]int, 0, len(entries)/2)
+	for index, entry := range entries {
+		if strings.TrimSpace(entry.Kind) != "tool_result" {
+			continue
+		}
+		if entry.TurnSeq > 0 && entry.TurnSeq < currentTurnSeq {
+			historicalIndexes = append(historicalIndexes, index)
+		}
+	}
+	if len(historicalIndexes) == 0 {
+		return nil
+	}
+	distances := make(map[int]int64, len(historicalIndexes))
+	total := len(historicalIndexes)
+	for pos, entryIndex := range historicalIndexes {
+		distances[entryIndex] = int64(total - 1 - pos)
+	}
+	return distances
+}
+
+func historicalToolResultPruneStub(conversation *ConversationFile, entry HistoryEntry, entryIndex int, priorToolCallDistances map[int]int64, toolName string, contentToTest string, arguments string) (string, bool) {
+	if conversation == nil || entry.TurnSeq <= 0 || len(priorToolCallDistances) == 0 {
+		return "", false
+	}
+	toolCallDistance, ok := priorToolCallDistances[entryIndex]
+	if !ok {
+		return "", false
+	}
+	currentTurnSeq := conversation.NextTurnSeq - 1
+	if currentTurnSeq <= 0 || entry.TurnSeq >= currentTurnSeq {
+		return "", false
+	}
+	turnDistance := currentTurnSeq - entry.TurnSeq
+	if len(contentToTest) <= 2000 {
+		return "", false
+	}
+
+	trimmedTool := strings.TrimSpace(toolName)
+	switch {
+	case strings.EqualFold(trimmedTool, "Grep"):
+		if turnDistance >= 2 || toolCallDistance >= 4 {
+			return "[Previous grep output truncated to save context]", true
+		}
+	case strings.EqualFold(trimmedTool, "Glob"):
+		if turnDistance >= 2 || toolCallDistance >= 4 {
+			return "[Previous glob output truncated to save context]", true
+		}
+	case strings.EqualFold(trimmedTool, "Shell"):
+		if turnDistance >= 4 || toolCallDistance >= 6 {
+			cmd := extractShellCommandFromArgs(arguments)
+			if len(cmd) > 60 {
+				cmd = cmd[:60] + "..."
+			}
+			if cmd != "" {
+				return fmt.Sprintf("[Previous shell output of %q truncated to save context]", cmd), true
+			}
+			return "[Previous shell output truncated to save context]", true
+		}
+	case strings.EqualFold(trimmedTool, "Ls") || strings.EqualFold(trimmedTool, "DirectoryList"):
+		if turnDistance >= 4 || toolCallDistance >= 6 {
+			return "[Previous directory listing truncated to save context]", true
+		}
+	case strings.EqualFold(trimmedTool, "Read"):
+		if strings.Contains(contentToTest, "data_blob_id") || strings.Contains(contentToTest, "dataBlobId") {
+			return "", false
+		}
+		if strings.Contains(contentToTest, "name: ak-") || strings.Contains(contentToTest, "/skills/") || strings.Contains(contentToTest, "\\skills\\") {
+			return "[Previous skill instructions omitted to save context]", true
+		}
+		if turnDistance >= 4 || toolCallDistance >= 8 {
+			if path := extractPathFromArgs(arguments); path != "" {
+				return fmt.Sprintf("[Previous Read of %q truncated to save context; re-read if needed]", path), true
+			}
+			return "[Previous Read output truncated to save context; re-read if needed]", true
+		}
+	case trimmedTool == "CallMcpTool" || trimmedTool == "FetchMcpResource" || trimmedTool == "ListMcpResources" || trimmedTool == "WebFetch" || trimmedTool == "WebSearch":
+		if turnDistance >= 4 || toolCallDistance >= 8 {
+			return fmt.Sprintf("[Previous %s output truncated to save context]", trimmedTool), true
+		}
+	case trimmedTool == "PatchEdit" || trimmedTool == "PatchEditLines" || trimmedTool == "PatchEditSpan" || trimmedTool == "Edit" || trimmedTool == "Write":
+		if turnDistance >= 4 || toolCallDistance >= 8 {
+			if path := extractPathFromArgs(arguments); path != "" {
+				return fmt.Sprintf("[Previous %s diff for %q truncated to save context]", trimmedTool, path), true
+			}
+			return fmt.Sprintf("[Previous %s diff truncated to save context]", trimmedTool), true
+		}
+	}
+	return "", false
+}
+
+func extractPathFromArgs(argsStr string) string {
+	if strings.TrimSpace(argsStr) == "" {
+		return ""
+	}
+	var args struct {
+		Path     string `json:"path"`
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal([]byte(argsStr), &args); err == nil {
+		return firstNonEmpty(strings.TrimSpace(args.Path), strings.TrimSpace(args.FilePath))
+	}
+	return ""
 }
 
 func extractShellCommandFromArgs(argsStr string) string {

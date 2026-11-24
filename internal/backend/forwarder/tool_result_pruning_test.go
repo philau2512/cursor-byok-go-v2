@@ -212,3 +212,135 @@ func TestLimitProjectedToolResultReplayPrunesHistoricalSkillRead(t *testing.T) {
 		t.Fatalf("expected historical skill read pruned to %q, got %q", expectedPlaceholder, prunedHistorical)
 	}
 }
+
+func TestPruneToolResultToolCallJSONCapsOversizedDiffString(t *testing.T) {
+	hugeDiff := strings.Repeat("+added line\n", 2000) // ~24KB > 8KB limit
+	rawInput, _ := json.Marshal(map[string]any{
+		"editToolCall": map[string]any{
+			"args": map[string]any{"path": "big.go"},
+			"result": map[string]any{
+				"success": map[string]any{
+					"path":       "big.go",
+					"diffString": hugeDiff,
+				},
+			},
+		},
+	})
+	pruned := pruneToolResultToolCallJSON("PatchEdit", rawInput)
+	var parsed map[string]any
+	if err := json.Unmarshal(pruned, &parsed); err != nil {
+		t.Fatalf("unmarshal pruned json: %v", err)
+	}
+	editCall, _ := parsed["editToolCall"].(map[string]any)
+	result, _ := editCall["result"].(map[string]any)
+	success, _ := result["success"].(map[string]any)
+	diffStr, _ := success["diffString"].(string)
+	if len(diffStr) > projectedPatchEditReplayLimit {
+		t.Fatalf("expected oversized diffString capped <= %d bytes, got %d", projectedPatchEditReplayLimit, len(diffStr))
+	}
+	if !strings.Contains(diffStr, "truncated: Edit result exceeded") {
+		t.Fatalf("expected truncation notice in capped diffString, got: %s", diffStr)
+	}
+}
+
+func TestLimitProjectedToolResultReplayCapsReadAndPatchEditAtSourceLimits(t *testing.T) {
+	hugeRead := strings.Repeat("line of source code\n", 3000) // ~60KB
+	readReplay := limitProjectedToolResultReplay("Read", hugeRead, "", false, false)
+	if len(readReplay) > projectedReadReplayLimit {
+		t.Fatalf("Read replay len = %d, want <= %d", len(readReplay), projectedReadReplayLimit)
+	}
+
+	hugeDiff := strings.Repeat("+new line\n", 2000) // ~20KB
+	editPayload, _ := json.Marshal(map[string]any{
+		"success": map[string]any{
+			"diff_string": hugeDiff,
+		},
+	})
+	editReplay := limitProjectedToolResultReplay("PatchEdit", string(editPayload), "", false, false)
+	if len(editReplay) > projectedPatchEditReplayLimit+256 {
+		t.Fatalf("PatchEdit replay len = %d, want <= %d", len(editReplay), projectedPatchEditReplayLimit+256)
+	}
+}
+
+func TestProjectPromptReplayPrunesByToolCallDistanceAtTurnBoundaryAndStaysStableWithinTurn(t *testing.T) {
+	entries := make([]HistoryEntry, 0, 24)
+	seq := int64(1)
+	for i := 0; i < 10; i++ {
+		callID := "call-" + string(rune('a'+i))
+		toolName := "Read"
+		args := `{"path":"file_` + string(rune('a'+i)) + `.go"}`
+		content := strings.Repeat("code line\n", 300) // ~3KB > 2000
+		if i == 0 {
+			toolName = "Shell"
+			args = `{"command":"go test ./..."}`
+		}
+		rawCall, _ := json.Marshal(map[string]any{
+			"tool_call_id": callID,
+			"tool_name":    toolName,
+			"tool_call": map[string]any{
+				"readToolCall": map[string]any{"args": map[string]any{"path": "file.go"}},
+			},
+		})
+		rawResult, _ := json.Marshal(map[string]any{
+			"tool_call_id": callID,
+			"tool_name":    toolName,
+			"arguments":    args,
+			"result_text":  content,
+		})
+		entries = append(entries,
+			HistoryEntry{Seq: seq, TurnSeq: 1, Role: "assistant", Kind: "tool_call", ToolCallID: callID, Payload: rawCall},
+			HistoryEntry{Seq: seq + 1, TurnSeq: 1, Role: "tool", Kind: "tool_result", ToolCallID: callID, Payload: rawResult},
+		)
+		seq += 2
+	}
+
+	// Turn 2 starts (NextTurnSeq = 3 -> currentTurnSeq = 2).
+	// Turn 1 had 10 tool_results: index 0 (Shell, dist=9 >= 6) and index 1 (Read, dist=8 >= 8) should be pruned,
+	// while index 2..9 (Read, dist=7..0 < 8) should be preserved!
+	convTurn2 := &ConversationFile{
+		NextTurnSeq: 3,
+		Entries:     append([]HistoryEntry(nil), entries...),
+	}
+	projector := NewHistoryProjector()
+	msgsBefore, err := projector.ProjectPromptReplay(convTurn2)
+	if err != nil {
+		t.Fatalf("ProjectPromptReplay() error = %v", err)
+	}
+	if !strings.Contains(msgsBefore[1].Content, "Previous shell output") {
+		t.Fatalf("expected oldest Shell (dist=9) to be pruned at Turn 2, got: %s", msgsBefore[1].Content)
+	}
+	if !strings.Contains(msgsBefore[3].Content, `Previous Read of "file_b.go" truncated`) {
+		t.Fatalf("expected Read at dist=8 to be pruned at Turn 2, got: %s", msgsBefore[3].Content)
+	}
+	if strings.Contains(msgsBefore[5].Content, "truncated to save context") {
+		t.Fatalf("expected Read at dist=7 to be preserved at Turn 2, got: %s", msgsBefore[5].Content)
+	}
+
+	// Adding new tool calls inside Turn 2 must NOT mutate Turn 1's projected prefix (prefix-cache stability).
+	rawTurn2Result, _ := json.Marshal(map[string]any{
+		"tool_call_id": "call-turn2",
+		"tool_name":    "Read",
+		"arguments":    `{"path":"turn2.go"}`,
+		"result_text":  strings.Repeat("turn2\n", 500),
+	})
+	rawTurn2Call, _ := json.Marshal(map[string]any{
+		"tool_call_id": "call-turn2",
+		"tool_name":    "Read",
+		"tool_call": map[string]any{
+			"readToolCall": map[string]any{"args": map[string]any{"path": "turn2.go"}},
+		},
+	})
+	convTurn2.Entries = append(convTurn2.Entries,
+		HistoryEntry{Seq: seq, TurnSeq: 2, Role: "assistant", Kind: "tool_call", ToolCallID: "call-turn2", Payload: rawTurn2Call},
+		HistoryEntry{Seq: seq + 1, TurnSeq: 2, Role: "tool", Kind: "tool_result", ToolCallID: "call-turn2", Payload: rawTurn2Result},
+	)
+	msgsAfter, err := projector.ProjectPromptReplay(convTurn2)
+	if err != nil {
+		t.Fatalf("ProjectPromptReplay() after Turn 2 tool error = %v", err)
+	}
+	for i := range msgsBefore {
+		if msgsAfter[i].Content != msgsBefore[i].Content {
+			t.Fatalf("Turn 1 prefix message %d mutated mid-Turn 2:\nbefore=%s\nafter=%s", i, msgsBefore[i].Content, msgsAfter[i].Content)
+		}
+	}
+}

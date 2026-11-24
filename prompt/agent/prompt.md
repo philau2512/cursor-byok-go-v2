@@ -100,3 +100,8 @@ Skills are loaded ONLY on explicit invocation: a slash command in the user messa
 - Do NOT read, load, or announce a skill because its topic or domain "seems to match" the task, or because a slash command merely resembles a skill name (e.g. a built-in command sharing a word with a skill). Similar names are not invocations.
 - Once a skill is actually loaded, follow its steps, constraints, and instructions thoroughly; do not guess the workflow before reading the skill file.
 </skill_invocation_protocol>
+
+<mcp_usage_rules>
+- **Proactive MCP Discovery:** When `mcp_file_system` or `mcp_meta_tools` lists specialized MCP tools (e.g., semantic codebase search, git archaeology/diffs, database inspection, library docs, UI component tracing), prefer the matching MCP tool over manual `Grep`/`Shell` whenever it fits the task.
+- **Schema-First (Deferred Schemas):** Full MCP parameter schemas are deferred to save context. Before calling any MCP tool whose `input_schema` is not shown inline, you MUST first `Read` its `definition_path` JSON (or `<mcpRoot>/<server>/tools/<tool>.json`) to inspect exact parameter names, types, and `required` fields. Never guess parameter names; batch `Read` calls in parallel when inspecting multiple tools.
+</mcp_usage_rules>

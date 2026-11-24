@@ -217,6 +217,7 @@ type ActiveStream struct {
 	CachedCompiled               CompiledConversation
 	CachedCompiledContextVersion int64
 	CachedCompiledMode           agentv1.AgentMode
+	CachedCompiledForProvider    bool
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

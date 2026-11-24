@@ -682,19 +682,6 @@ func enrichCommandForStreaming(cmd string) string {
 		return cmd
 	}
 
-	lower := strings.ToLower(trimmed)
-
-	// Python / Pytest / .py file unbuffered & UTF-8 encoding
-	if isPythonCommand(lower) && !strings.Contains(lower, "pythonunbuffered") {
-		return `$env:PYTHONUNBUFFERED="1"; $env:PYTHONIOENCODING="utf-8"; ` + trimmed
-	}
-
-	// Node.js suppress warnings to avoid buffering delays
-	if (strings.HasPrefix(lower, "node ") || strings.Contains(lower, "\\node.exe") || strings.Contains(lower, "/node ")) &&
-		!strings.Contains(lower, "node_no_warnings") {
-		return `$env:NODE_NO_WARNINGS="1"; ` + trimmed
-	}
-
 	return trimmed
 }
 
@@ -1762,7 +1749,7 @@ const maxGlobReplayFiles = 200
 const (
 	replayKiB = 1024
 
-	readReplayContentLimit     = 64 * replayKiB
+	readReplayContentLimit     = 24 * replayKiB
 	readReplayLineLimit        = 0
 	readReplayBinaryLimit      = 32 * replayKiB
 	shellReplayStreamLimit     = 16 * replayKiB

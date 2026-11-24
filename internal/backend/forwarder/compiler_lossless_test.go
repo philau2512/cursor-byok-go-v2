@@ -141,3 +141,33 @@ func assertEquivalentProviderMessages(t testing.TB, got []modeladapter.Message, 
 		t.Fatalf("provider-visible replay changed\ngot:  %s\nwant: %s", gotJSON, wantJSON)
 	}
 }
+
+func TestCheckpointCompiledConversationDoesNotPoisonProviderCache(t *testing.T) {
+	conversation := losslessReplayFixture(t)
+	conversation.ContextVersion = 7
+	compiler := NewPromptCompiler(NewHistoryProjector(), NewToolCatalog(), nil, nil)
+	service := &Service{compiler: compiler}
+	stream := &ActiveStream{
+		Mode:      agentv1.AgentMode_AGENT_MODE_AGENT,
+		ModelName: "test-model",
+	}
+
+	estimated, ok := service.checkpointCompiledConversation(stream, conversation)
+	if !ok || len(estimated.Messages) == 0 {
+		t.Fatal("checkpointCompiledConversation() failed to compile")
+	}
+	if estimated.StableMessageCount != 0 {
+		t.Fatalf("token estimate StableMessageCount = %d, want 0", estimated.StableMessageCount)
+	}
+	if stream.CachedCompiledForProvider {
+		t.Fatal("checkpointCompiledConversation() must not mark token-estimate cache as provider-ready")
+	}
+
+	fullCompiled, err := compiler.Compile(conversation, stream.Mode, stream.LatestUserText, stream.ModelName)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if fullCompiled.StableMessageCount == 0 {
+		t.Fatal("expected full Compile() to compute non-zero StableMessageCount")
+	}
+}

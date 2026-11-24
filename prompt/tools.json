@@ -70,7 +70,7 @@
     },
     {
       "function": {
-        "description": "Call an MCP tool by server identifier and tool name with structured arguments matching the tool's parameter schema. If an MCP error occurs, inspect it, correct arguments or authentication, and retry only when appropriate.",
+        "description": "Call an MCP tool by server identifier and tool name with structured arguments matching the tool's parameter schema. Proactively check mcp_file_system or mcp_meta_tools for specialized MCP tools before falling back to manual Grep/Shell. If a tool's input_schema is deferred (not shown inline), you MUST Read its definition_path JSON first to inspect exact parameter names, types, and required fields before calling. If an MCP error occurs, inspect it, correct arguments or authentication, and retry only when appropriate.",
         "name": "CallMcpTool",
         "parameters": {
           "properties": {

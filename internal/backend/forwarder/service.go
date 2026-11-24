@@ -1777,7 +1777,8 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 	var compiled CompiledConversation
 	if stream != nil {
 		stream.mu.Lock()
-		if stream.CachedCompiledContextVersion == conversation.ContextVersion &&
+		if stream.CachedCompiledForProvider &&
+			stream.CachedCompiledContextVersion == conversation.ContextVersion &&
 			stream.CachedCompiledContextVersion > 0 &&
 			stream.CachedCompiledMode == mode &&
 			len(stream.CachedCompiled.Messages) > 0 {
@@ -1798,6 +1799,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 			stream.CachedCompiled = compiled
 			stream.CachedCompiledContextVersion = conversation.ContextVersion
 			stream.CachedCompiledMode = mode
+			stream.CachedCompiledForProvider = true
 			stream.mu.Unlock()
 		}
 	}
@@ -2795,7 +2797,19 @@ func (service *Service) checkpointCompiledConversation(stream *ActiveStream, con
 		}
 		stream.mu.Unlock()
 	}
-	compiled, err := service.compiler.Compile(conversation, mode, latestUserText, modelName)
+	var (
+		compiled    CompiledConversation
+		err         error
+		forProvider bool
+	)
+	if estimator, ok := service.compiler.(interface {
+		CompileForTokenEstimate(*ConversationFile, agentv1.AgentMode, string, string) (CompiledConversation, error)
+	}); ok {
+		compiled, err = estimator.CompileForTokenEstimate(conversation, mode, latestUserText, modelName)
+	} else {
+		compiled, err = service.compiler.Compile(conversation, mode, latestUserText, modelName)
+		forProvider = true
+	}
 	if err != nil {
 		log.Printf("forwarder checkpoint token estimate failed request_id=%s conversation_id=%s err=%v", strings.TrimSpace(activeStreamRequestID(stream)), strings.TrimSpace(conversation.ConversationID), err)
 		return CompiledConversation{}, false
@@ -2806,6 +2820,7 @@ func (service *Service) checkpointCompiledConversation(stream *ActiveStream, con
 		stream.CachedCompiled = guarded
 		stream.CachedCompiledContextVersion = conversation.ContextVersion
 		stream.CachedCompiledMode = mode
+		stream.CachedCompiledForProvider = forProvider
 		stream.mu.Unlock()
 	}
 	return guarded, true

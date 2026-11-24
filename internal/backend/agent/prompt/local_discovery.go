@@ -84,20 +84,40 @@ func isCursorInternalProjectFolder(path string) bool {
 	return strings.Contains(slash, "/.cursor/projects")
 }
 
+var (
+	projectMarkerCacheMu sync.RWMutex
+	projectMarkerCache   = make(map[string]bool)
+)
+
 func hasProjectMarker(dir string) bool {
 	cleanDir := filepath.Clean(dir)
+	key := strings.ToLower(filepath.ToSlash(cleanDir))
+	projectMarkerCacheMu.RLock()
+	cached, ok := projectMarkerCache[key]
+	projectMarkerCacheMu.RUnlock()
+	if ok {
+		return cached
+	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		if strings.EqualFold(cleanDir, filepath.Clean(home)) {
+			projectMarkerCacheMu.Lock()
+			projectMarkerCache[key] = false
+			projectMarkerCacheMu.Unlock()
 			return false
 		}
 	}
 	markers := []string{".cursor", ".agents", ".git"}
+	found := false
 	for _, m := range markers {
 		if info, err := os.Stat(filepath.Join(cleanDir, m)); err == nil && info.IsDir() {
-			return true
+			found = true
+			break
 		}
 	}
-	return false
+	projectMarkerCacheMu.Lock()
+	projectMarkerCache[key] = found
+	projectMarkerCacheMu.Unlock()
+	return found
 }
 
 func parseFrontmatter(content string) (map[string]interface{}, string) {
@@ -131,6 +151,25 @@ func extractFallbackDescription(body string, fallback string) string {
 	}
 	return fallback
 }
+
+type discoveredLocalSkill struct {
+	absPath     string
+	pathKey     string
+	nameKey     string
+	content     string
+	description string
+}
+
+type cachedLocalSkillsDir struct {
+	exists  bool
+	modTime time.Time
+	skills  []discoveredLocalSkill
+}
+
+var (
+	localSkillsCacheMu sync.RWMutex
+	localSkillsCache   = make(map[string]cachedLocalSkillsDir)
+)
 
 // mergeLocalSkills 自动发现工作区及用户主目录下的 skills 目录，合并至 requestContext。
 func mergeLocalSkills(requestContext *agentv1.RequestContext) {
@@ -171,41 +210,100 @@ func mergeLocalSkills(requestContext *agentv1.RequestContext) {
 	}
 
 	for _, dir := range skillDirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			entryPath := filepath.Join(dir, entry.Name())
-			if entry.IsDir() {
-				for _, cand := range []string{"SKILL.md", "skill.md", "Skill.md"} {
-					skillFile := filepath.Join(entryPath, cand)
-					if info, err := os.Stat(skillFile); err == nil && !info.IsDir() {
-						addSkillFromFile(requestContext, skillFile, entry.Name(), knownPaths, knownNames)
-						break
-					}
-				}
-			} else if strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
-				stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-				addSkillFromFile(requestContext, entryPath, stem, knownPaths, knownNames)
+		for _, item := range loadLocalSkillsFromDir(dir) {
+			if _, ok := knownPaths[item.pathKey]; ok {
+				continue
 			}
+			if item.nameKey != "" {
+				if _, ok := knownNames[item.nameKey]; ok {
+					continue
+				}
+			}
+			knownPaths[item.pathKey] = struct{}{}
+			if item.nameKey != "" {
+				knownNames[item.nameKey] = struct{}{}
+			}
+			requestContext.AgentSkills = append(requestContext.AgentSkills, &agentv1.AgentSkill{
+				FullPath:               item.absPath,
+				Content:                item.content,
+				Description:            item.description,
+				DisableModelInvocation: false,
+			})
 		}
 	}
 }
 
-func addSkillFromFile(requestContext *agentv1.RequestContext, filePath string, defaultName string, knownPaths map[string]struct{}, knownNames map[string]struct{}) {
+func loadLocalSkillsFromDir(dir string) []discoveredLocalSkill {
+	cleanDir := filepath.Clean(dir)
+	dirKey := strings.ToLower(filepath.ToSlash(cleanDir))
+
+	info, statErr := os.Stat(cleanDir)
+	exists := statErr == nil && info.IsDir()
+
+	localSkillsCacheMu.RLock()
+	cached, ok := localSkillsCache[dirKey]
+	localSkillsCacheMu.RUnlock()
+	if ok {
+		if !exists && !cached.exists {
+			return nil
+		}
+		if exists && cached.exists && cached.modTime.Equal(info.ModTime()) {
+			return cached.skills
+		}
+	}
+
+	if !exists {
+		localSkillsCacheMu.Lock()
+		localSkillsCache[dirKey] = cachedLocalSkillsDir{exists: false}
+		localSkillsCacheMu.Unlock()
+		return nil
+	}
+
+	entries, err := os.ReadDir(cleanDir)
+	if err != nil {
+		return nil
+	}
+	skills := make([]discoveredLocalSkill, 0, len(entries))
+	for _, entry := range entries {
+		entryPath := filepath.Join(cleanDir, entry.Name())
+		if entry.IsDir() {
+			for _, cand := range []string{"SKILL.md", "skill.md", "Skill.md"} {
+				skillFile := filepath.Join(entryPath, cand)
+				if fileInfo, err := os.Stat(skillFile); err == nil && !fileInfo.IsDir() {
+					if item, ok := parseLocalSkillFile(skillFile, entry.Name()); ok {
+						skills = append(skills, item)
+					}
+					break
+				}
+			}
+		} else if strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
+			stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+			if item, ok := parseLocalSkillFile(entryPath, stem); ok {
+				skills = append(skills, item)
+			}
+		}
+	}
+
+	localSkillsCacheMu.Lock()
+	localSkillsCache[dirKey] = cachedLocalSkillsDir{
+		exists:  true,
+		modTime: info.ModTime(),
+		skills:  skills,
+	}
+	localSkillsCacheMu.Unlock()
+	return skills
+}
+
+func parseLocalSkillFile(filePath string, defaultName string) (discoveredLocalSkill, bool) {
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
 		absPath = filePath
 	}
 	pathKey := strings.ToLower(filepath.ToSlash(filepath.Clean(absPath)))
-	if _, ok := knownPaths[pathKey]; ok {
-		return
-	}
 
 	contentBytes, err := os.ReadFile(absPath)
 	if err != nil || len(bytes.TrimSpace(contentBytes)) == 0 {
-		return
+		return discoveredLocalSkill{}, false
 	}
 	content := string(contentBytes)
 	fm, body := parseFrontmatter(content)
@@ -227,30 +325,41 @@ func addSkillFromFile(requestContext *agentv1.RequestContext, filePath string, d
 	}
 
 	if disableModel {
-		return
-	}
-
-	nameKey := strings.ToLower(name)
-	if _, ok := knownNames[nameKey]; ok && nameKey != "" {
-		return
+		return discoveredLocalSkill{}, false
 	}
 
 	if description == "" {
 		description = extractFallbackDescription(body, name)
 	}
 
-	knownPaths[pathKey] = struct{}{}
-	if nameKey != "" {
-		knownNames[nameKey] = struct{}{}
-	}
-
-	requestContext.AgentSkills = append(requestContext.AgentSkills, &agentv1.AgentSkill{
-		FullPath:               absPath,
-		Content:                content,
-		Description:            description,
-		DisableModelInvocation: false,
-	})
+	return discoveredLocalSkill{
+		absPath:     absPath,
+		pathKey:     pathKey,
+		nameKey:     strings.ToLower(name),
+		content:     content,
+		description: description,
+	}, true
 }
+
+type discoveredLocalSubagent struct {
+	absPath     string
+	name        string
+	nameKey     string
+	description string
+	model       string
+	prompt      string
+}
+
+type cachedLocalSubagentsDir struct {
+	exists    bool
+	modTime   time.Time
+	subagents []discoveredLocalSubagent
+}
+
+var (
+	localSubagentsCacheMu sync.RWMutex
+	localSubagentsCache   = make(map[string]cachedLocalSubagentsDir)
+)
 
 // mergeLocalSubagents 自动发现工作区及用户主目录下的 agents/subagents 目录，合并至 requestContext。
 func mergeLocalSubagents(requestContext *agentv1.RequestContext) {
@@ -291,29 +400,84 @@ func mergeLocalSubagents(requestContext *agentv1.RequestContext) {
 	}
 
 	for _, dir := range agentDirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
-				continue
+		for _, item := range loadLocalSubagentsFromDir(dir) {
+			if item.nameKey != "" {
+				if _, ok := knownNames[item.nameKey]; ok {
+					continue
+				}
+				knownNames[item.nameKey] = struct{}{}
 			}
-			filePath := filepath.Join(dir, entry.Name())
-			absPath, err := filepath.Abs(filePath)
-			if err != nil {
-				absPath = filePath
-			}
-			stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-			addAgentFromFile(requestContext, absPath, stem, knownNames)
+			requestContext.CustomSubagents = append(requestContext.CustomSubagents, &agentv1.CustomSubagent{
+				FullPath:    item.absPath,
+				Name:        item.name,
+				Description: item.description,
+				Model:       item.model,
+				Prompt:      item.prompt,
+			})
 		}
 	}
 }
 
-func addAgentFromFile(requestContext *agentv1.RequestContext, absPath string, defaultName string, knownNames map[string]struct{}) {
+func loadLocalSubagentsFromDir(dir string) []discoveredLocalSubagent {
+	cleanDir := filepath.Clean(dir)
+	dirKey := strings.ToLower(filepath.ToSlash(cleanDir))
+
+	info, statErr := os.Stat(cleanDir)
+	exists := statErr == nil && info.IsDir()
+
+	localSubagentsCacheMu.RLock()
+	cached, ok := localSubagentsCache[dirKey]
+	localSubagentsCacheMu.RUnlock()
+	if ok {
+		if !exists && !cached.exists {
+			return nil
+		}
+		if exists && cached.exists && cached.modTime.Equal(info.ModTime()) {
+			return cached.subagents
+		}
+	}
+
+	if !exists {
+		localSubagentsCacheMu.Lock()
+		localSubagentsCache[dirKey] = cachedLocalSubagentsDir{exists: false}
+		localSubagentsCacheMu.Unlock()
+		return nil
+	}
+
+	entries, err := os.ReadDir(cleanDir)
+	if err != nil {
+		return nil
+	}
+	subagents := make([]discoveredLocalSubagent, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
+			continue
+		}
+		filePath := filepath.Join(cleanDir, entry.Name())
+		absPath, err := filepath.Abs(filePath)
+		if err != nil {
+			absPath = filePath
+		}
+		stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		if item, ok := parseLocalSubagentFile(absPath, stem); ok {
+			subagents = append(subagents, item)
+		}
+	}
+
+	localSubagentsCacheMu.Lock()
+	localSubagentsCache[dirKey] = cachedLocalSubagentsDir{
+		exists:    true,
+		modTime:   info.ModTime(),
+		subagents: subagents,
+	}
+	localSubagentsCacheMu.Unlock()
+	return subagents
+}
+
+func parseLocalSubagentFile(absPath string, defaultName string) (discoveredLocalSubagent, bool) {
 	contentBytes, err := os.ReadFile(absPath)
 	if err != nil || len(bytes.TrimSpace(contentBytes)) == 0 {
-		return
+		return discoveredLocalSubagent{}, false
 	}
 	content := string(contentBytes)
 	fm, body := parseFrontmatter(content)
@@ -334,26 +498,18 @@ func addAgentFromFile(requestContext *agentv1.RequestContext, absPath string, de
 		}
 	}
 
-	nameKey := strings.ToLower(name)
-	if _, ok := knownNames[nameKey]; ok && nameKey != "" {
-		return
-	}
-
 	if description == "" {
 		description = extractFallbackDescription(body, name)
 	}
 
-	if nameKey != "" {
-		knownNames[nameKey] = struct{}{}
-	}
-
-	requestContext.CustomSubagents = append(requestContext.CustomSubagents, &agentv1.CustomSubagent{
-		FullPath:    absPath,
-		Name:        name,
-		Description: description,
-		Model:       model,
-		Prompt:      body,
-	})
+	return discoveredLocalSubagent{
+		absPath:     absPath,
+		name:        name,
+		nameKey:     strings.ToLower(name),
+		description: description,
+		model:       model,
+		prompt:      body,
+	}, true
 }
 
 const (
@@ -456,11 +612,27 @@ type cachedAgentRules struct {
 	rules    []discoveredAgentRule
 }
 
-// InvalidateAgentRulesCache 清理工作区 agent rules 的内存缓存，确保只在用户发送新消息时重新扫盘。
+// InvalidateAgentRulesCache 清理工作区 agent rules、skills、subagents 与 MCP definition 缓存，确保只在用户发送新消息时重新扫盘。
 func InvalidateAgentRulesCache() {
 	agentRulesCacheMu.Lock()
 	agentRulesCache = make(map[string]cachedAgentRules)
 	agentRulesCacheMu.Unlock()
+
+	localSkillsCacheMu.Lock()
+	localSkillsCache = make(map[string]cachedLocalSkillsDir)
+	localSkillsCacheMu.Unlock()
+
+	localSubagentsCacheMu.Lock()
+	localSubagentsCache = make(map[string]cachedLocalSubagentsDir)
+	localSubagentsCacheMu.Unlock()
+
+	projectMarkerCacheMu.Lock()
+	projectMarkerCache = make(map[string]bool)
+	projectMarkerCacheMu.Unlock()
+
+	mcpReadableCacheMu.Lock()
+	mcpReadableCache = make(map[string]bool)
+	mcpReadableCacheMu.Unlock()
 }
 
 // mergeLocalAgentRules 递归发现工作区各层级目录下的 AGENTS.md / AGENT.md 文件，并按层级合并至 requestContext.Rules。
@@ -754,8 +926,35 @@ func compactSchemaNode(node map[string]any, keepEnums bool) map[string]any {
 	return out
 }
 
-// hydrateLocalMCPDescriptors 从 definition_path 文件或 fallback 规则中自动补齐 MCP 工具的完整 description，
-// 并内联 compact input schema（参数名/类型/required）；schema 超预算时保持 lazy load 经 definition_path。
+var (
+	mcpReadableCacheMu sync.RWMutex
+	mcpReadableCache   = make(map[string]bool)
+)
+
+func hasReadableMCPDefinitionFile(defPath string) bool {
+	trimmed := strings.TrimSpace(defPath)
+	if trimmed == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(trimmed)
+	cacheKey := strings.ToLower(filepath.ToSlash(cleanPath))
+	mcpReadableCacheMu.RLock()
+	cached, ok := mcpReadableCache[cacheKey]
+	mcpReadableCacheMu.RUnlock()
+	if ok {
+		return cached
+	}
+	info, err := os.Stat(cleanPath)
+	readable := err == nil && !info.IsDir()
+	mcpReadableCacheMu.Lock()
+	mcpReadableCache[cacheKey] = readable
+	mcpReadableCacheMu.Unlock()
+	return readable
+}
+
+// hydrateLocalMCPDescriptors 从 definition_path 文件或 fallback 规则中自动补齐 MCP 工具的摘要 description；
+// 当 definition_path 在磁盘上可读时延迟加载 input_schema（由模型按需 Read definition_path），
+// 仅在无可读 definition_path 时才内联 compact input schema。
 func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 	if requestContext == nil {
 		return
@@ -782,13 +981,16 @@ func hydrateLocalMCPDescriptors(requestContext *agentv1.RequestContext) {
 			if defPath == "" && folderPath != "" {
 				defPath = filepath.Join(folderPath, "tools", tool.GetToolName()+".json")
 			}
+			readableDef := hasReadableMCPDefinitionFile(defPath)
+			if readableDef && strings.TrimSpace(tool.GetDefinitionPath()) == "" {
+				tool.DefinitionPath = proto.String(defPath)
+			}
+			needsDescription := strings.TrimSpace(tool.GetDescription()) == ""
+			needsSchema := !readableDef && strings.TrimSpace(tool.GetInputSchemaJson()) == "" && tool.GetInputSchema() == nil
 			var descText, schemaText string
-			if defPath != "" {
+			if readableDef && (needsDescription || needsSchema) {
 				descText, schemaText = readMCPToolDefinition(defPath)
 			}
-
-			needsDescription := strings.TrimSpace(tool.GetDescription()) == ""
-			needsSchema := strings.TrimSpace(tool.GetInputSchemaJson()) == "" && tool.GetInputSchema() == nil
 			if needsDescription {
 				if descText != "" {
 					tool.Description = proto.String(descText)

@@ -695,7 +695,7 @@ func buildRequestContextMCPFileSystemSection(requestContext *agentv1.RequestCont
 	}
 
 	return fmt.Sprintf(
-		"<mcp_file_system>\n\n## MCP Tool Access\n\nYou have access to MCP tools through the MCP FileSystem. Embedded MCP tool descriptors below include each tool's description and, when present, a compact input schema (parameter names, types, required fields). Invoke MCP tools with CallMcpTool using exactly the parameter names from that schema; never invent parameter names. If a descriptor has no input_schema, or a call fails parameter validation, Read the tool JSON at its definition_path (or under %s/<server>/tools/<tool>.json) to obtain the full schema before calling or retrying.\n\n## MCP Resource Access\n\nYou also have access to MCP resources through the MCP FileSystem. Resource descriptors live under %s/<server>/resources/.\n\nAvailable MCP servers:\n\n<mcp_file_system_servers>%s</mcp_file_system_servers>%s\n</mcp_file_system>",
+		"<mcp_file_system>\n\n## MCP Tool Access (Deferred Schemas)\n\nSpecialized MCP tools are available below. Proactively check and prefer these MCP tools over manual Grep/Shell whenever a task matches their capability (e.g., semantic codebase search, git archaeology/diffs, database inspection, library documentation, or UI component tracing).\n\nTo save context, full parameter schemas are deferred. Before calling any MCP tool whose `input_schema` is not shown inline, you MUST first call `Read` on its `definition_path` (or under %s/<server>/tools/<tool>.json) to inspect exact parameter names, types, enums, and `required` fields. Never guess or invent parameter names. You may batch multiple `Read` calls in parallel. Invoke MCP tools with `CallMcpTool` using the exact parameter names from the schema.\n\n## MCP Resource Access\n\nYou also have access to MCP resources through the MCP FileSystem. Resource descriptors live under %s/<server>/resources/.\n\nAvailable MCP servers:\n\n<mcp_file_system_servers>%s</mcp_file_system_servers>%s\n</mcp_file_system>",
 		mcpRoot,
 		mcpRoot,
 		strings.Join(serverEntries, "\n\n"),
@@ -766,7 +766,7 @@ func buildRequestContextMCPMetaToolsSection(requestContext *agentv1.RequestConte
 	}
 
 	return fmt.Sprintf(
-		"<mcp_meta_tools>\nThe following MCP tools are available. Call a listed tool directly with CallMcpTool without calling GetMcpTools first. If a call returns an error, use it to correct the arguments or authentication and retry when appropriate.\n<mcp_meta_tool_servers>\n%s\n</mcp_meta_tool_servers>\n</mcp_meta_tools>",
+		"<mcp_meta_tools>\nThe following MCP tools are available. Proactively check and prefer matching MCP tools over manual Grep/Shell when tasks fit their capability (semantic search, git history/diffs, database queries, library docs, UI tracing).\nTo save context, full parameter schemas are deferred when `definition_path` is provided: before calling any tool without an inline `input_schema`, you MUST `Read` its `definition_path` JSON first to inspect exact parameter names, types, and `required` fields. Never guess parameter names. Call listed tools with `CallMcpTool` without calling `GetMcpTools` first.\n<mcp_meta_tool_servers>\n%s\n</mcp_meta_tool_servers>\n</mcp_meta_tools>",
 		strings.Join(serverEntries, "\n"),
 	)
 }
@@ -796,23 +796,30 @@ func buildMetaToolServerEntry(descriptor *agentv1.McpDescriptor) string {
 		if toolName == "" {
 			continue
 		}
+		definitionPath := strings.TrimSpace(tool.GetDefinitionPath())
+		deferred := hasReadableMCPDefinitionFile(definitionPath)
 		entryLines := []string{fmt.Sprintf(`<mcp_tool name="%s">`, escapePromptXML(toolName))}
-		if definitionPath := strings.TrimSpace(tool.GetDefinitionPath()); definitionPath != "" {
+		if definitionPath != "" {
 			entryLines = append(entryLines, "<definition_path>"+escapePromptXML(definitionPath)+"</definition_path>")
 		}
 		description := strings.TrimSpace(tool.GetDescription())
 		if description == "" {
 			description = getFallbackMcpToolDescription(serverID, toolName)
 		}
+		if deferred && description != "" {
+			description = summarizeMCPToolDescription(description, mcpDeferredDescriptionMaxChars)
+		}
 		if description != "" {
 			entryLines = append(entryLines, "<description>"+escapePromptXML(description)+"</description>")
 		}
-		inputSchema := strings.TrimSpace(tool.GetInputSchemaJson())
-		if inputSchema == "" && tool.GetInputSchema() != nil {
-			inputSchema = strings.TrimSpace(compactProtoJSON(tool.GetInputSchema()))
-		}
-		if inputSchema != "" {
-			entryLines = append(entryLines, "<input_schema>"+escapePromptXML(inputSchema)+"</input_schema>")
+		if !deferred {
+			inputSchema := strings.TrimSpace(tool.GetInputSchemaJson())
+			if inputSchema == "" && tool.GetInputSchema() != nil {
+				inputSchema = strings.TrimSpace(compactProtoJSON(tool.GetInputSchema()))
+			}
+			if inputSchema != "" {
+				entryLines = append(entryLines, "<input_schema>"+escapePromptXML(inputSchema)+"</input_schema>")
+			}
 		}
 		entryLines = append(entryLines, "</mcp_tool>")
 		toolEntries = append(toolEntries, strings.Join(entryLines, "\n"))
@@ -902,11 +909,37 @@ func buildRequestContextPRAttributionSection(requestContext *agentv1.RequestCont
 	return "<pr_attribution_message>\n" + message + "\n</pr_attribution_message>"
 }
 
+const (
+	mcpDeferredDescriptionMaxChars        = 180
+	mcpDeferredServerInstructionsMaxChars = 240
+)
+
+func summarizeMCPToolDescription(desc string, maxChars int) string {
+	trimmed := strings.TrimSpace(desc)
+	if trimmed == "" {
+		return ""
+	}
+	if idx := strings.Index(trimmed, "\n\n"); idx > 0 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
+	collapsed := strings.Join(strings.Fields(trimmed), " ")
+	runes := []rune(collapsed)
+	if maxChars <= 0 || len(runes) <= maxChars {
+		return collapsed
+	}
+	cut := string(runes[:maxChars])
+	if lastSpace := strings.LastIndexByte(cut, ' '); lastSpace > len(cut)/2 {
+		cut = cut[:lastSpace]
+	}
+	return strings.TrimRight(cut, ".,;:- ") + "..."
+}
+
 func buildEmbeddedMCPDescriptorSection(descriptor *agentv1.McpDescriptor, serverID string, folderPath string) string {
 	if descriptor == nil {
 		return ""
 	}
 	toolEntries := make([]string, 0, len(descriptor.GetTools()))
+	hasDeferredTool := false
 	for _, tool := range descriptor.GetTools() {
 		if tool == nil {
 			continue
@@ -915,23 +948,33 @@ func buildEmbeddedMCPDescriptorSection(descriptor *agentv1.McpDescriptor, server
 		if toolName == "" {
 			continue
 		}
+		definitionPath := strings.TrimSpace(tool.GetDefinitionPath())
+		deferred := hasReadableMCPDefinitionFile(definitionPath)
+		if deferred {
+			hasDeferredTool = true
+		}
 		entry := fmt.Sprintf(`<mcp_tool name="%s">`, escapePromptXML(toolName))
-		if definitionPath := strings.TrimSpace(tool.GetDefinitionPath()); definitionPath != "" {
+		if definitionPath != "" {
 			entry += "\n<definition_path>" + escapePromptXML(definitionPath) + "</definition_path>"
 		}
 		description := strings.TrimSpace(tool.GetDescription())
 		if description == "" {
 			description = getFallbackMcpToolDescription(serverID, toolName)
 		}
+		if deferred && description != "" {
+			description = summarizeMCPToolDescription(description, mcpDeferredDescriptionMaxChars)
+		}
 		if description != "" {
 			entry += "\n<description>" + escapePromptXML(description) + "</description>"
 		}
-		inputSchema := strings.TrimSpace(tool.GetInputSchemaJson())
-		if inputSchema == "" && tool.GetInputSchema() != nil {
-			inputSchema = strings.TrimSpace(compactProtoJSON(tool.GetInputSchema()))
-		}
-		if inputSchema != "" {
-			entry += "\n<input_schema>" + escapePromptXML(inputSchema) + "</input_schema>"
+		if !deferred {
+			inputSchema := strings.TrimSpace(tool.GetInputSchemaJson())
+			if inputSchema == "" && tool.GetInputSchema() != nil {
+				inputSchema = strings.TrimSpace(compactProtoJSON(tool.GetInputSchema()))
+			}
+			if inputSchema != "" {
+				entry += "\n<input_schema>" + escapePromptXML(inputSchema) + "</input_schema>"
+			}
 		}
 		entry += "\n</mcp_tool>"
 		toolEntries = append(toolEntries, entry)
@@ -949,6 +992,9 @@ func buildEmbeddedMCPDescriptorSection(descriptor *agentv1.McpDescriptor, server
 		),
 	}
 	if instructions := strings.TrimSpace(descriptor.GetServerUseInstructions()); instructions != "" {
+		if hasDeferredTool {
+			instructions = summarizeMCPToolDescription(instructions, mcpDeferredServerInstructionsMaxChars)
+		}
 		lines = append(lines, "<server_use_instructions>"+escapePromptXML(instructions)+"</server_use_instructions>")
 	}
 	if len(toolEntries) > 0 {
