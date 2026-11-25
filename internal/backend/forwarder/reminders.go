@@ -24,6 +24,7 @@ const (
 	promptContextSourceSubagentContract          = "subagent_contract"
 	promptContextSourceSubagentEmptyStopRecovery = "subagent_empty_stop_recovery"
 	promptContextSourceDebugModeReminder         = "debug_mode_reminder"
+	promptContextSourceTodoTracking              = "todo_tracking"
 )
 
 // NewReminderInjector 创建默认 reminder 注入器。
@@ -80,6 +81,11 @@ func (injector *DefaultReminderInjector) Inject(mode agentv1.AgentMode, conversa
 		PromptContexts: []PromptContextMessage{
 			newPromptContextReminder(promptContextSourceActiveModeContract, currentModeContractText(normalizedMode, false)),
 		},
+	}
+	if normalizedMode == agentv1.AgentMode_AGENT_MODE_AGENT || normalizedMode == agentv1.AgentMode_AGENT_MODE_MULTITASK {
+		if reminder := todoTrackingReminderText(conversation); reminder != "" {
+			result.PromptContexts = append(result.PromptContexts, newPromptContextReminder(promptContextSourceTodoTracking, reminder))
+		}
 	}
 	if normalizedMode == agentv1.AgentMode_AGENT_MODE_PLAN {
 		if reminder := strings.TrimSpace(promptassets.MustReadPlanSystemReminder()); reminder != "" {
@@ -328,6 +334,87 @@ func hasCurrentPlan(conversation *ConversationFile) bool {
 		return false
 	}
 	return state.HasPlan || len(state.Plans) > 0
+}
+
+// todoTrackingReminderText nhắc model bám sát checklist đã tạo: biết chính xác mình đang ở
+// bước nào, tick theo trình tự và chỉ mark completed khi có bằng chứng. Trả rỗng khi chưa có
+// todo hoặc todo đã xong hết, để không tốn token và không nhắc dư.
+func todoTrackingReminderText(conversation *ConversationFile) string {
+	if conversation == nil {
+		return ""
+	}
+	state, err := projectConversationStructuredState(conversation)
+	if err != nil || len(state.Todos) == 0 {
+		return ""
+	}
+
+	var pending, inProgress, completed, cancelled int
+	var current, nextPending *agentv1.TodoItem
+	for _, item := range state.Todos {
+		switch item.GetStatus() {
+		case agentv1.TodoStatus_TODO_STATUS_IN_PROGRESS:
+			inProgress++
+			if current == nil {
+				current = item
+			}
+		case agentv1.TodoStatus_TODO_STATUS_COMPLETED:
+			completed++
+		case agentv1.TodoStatus_TODO_STATUS_CANCELLED:
+			cancelled++
+		default:
+			pending++
+			if nextPending == nil {
+				nextPending = item
+			}
+		}
+	}
+	if inProgress+pending == 0 {
+		return ""
+	}
+
+	summary := fmt.Sprintf("Active checklist: %d steps, %d completed, %d in_progress, %d pending",
+		len(state.Todos), completed, inProgress, pending)
+	if cancelled > 0 {
+		summary += fmt.Sprintf(", %d cancelled", cancelled)
+	}
+	lines := []string{summary + ". Work it one step at a time."}
+
+	step := current
+	verb := "in_progress"
+	if step == nil {
+		step = nextPending
+		verb = "pending"
+	}
+	if step != nil {
+		lines = append(lines, fmt.Sprintf("Current step (%s): %s — %s",
+			verb, todoReminderInlineID(step), truncateReminderText(step.GetContent(), 160)))
+	}
+	lines = append(lines, "Address that step now. Call TodoWrite with merge=true and only {id, status: \"in_progress\"} when you start it, then {id, status: \"completed\"} immediately after you verified it with evidence (a passing command, an inspected diff, or a read of the changed line). Do not mark a step completed on assumption, do not move to a later step while the current one is unverified, and do not resend the whole list for a status tick. When the checklist is finished, report the result against it instead of leaving steps pending.")
+	lines = append(lines, "If this checklist belongs to an earlier request and no longer matches what the user is asking now, do not force it to the end: mark the obsolete steps cancelled with merge=true, then start the new checklist (CreatePlan for a plan, or TodoWrite with merge=false once nothing is active). merge=true always keeps the items it does not mention, so it is never the way to switch to a new task.")
+	return strings.Join(lines, "\n\n")
+}
+
+func todoReminderInlineID(item *agentv1.TodoItem) string {
+	if item == nil {
+		return "?"
+	}
+	if id := strings.TrimSpace(item.GetId()); id != "" {
+		return id
+	}
+	return "?"
+}
+
+func truncateReminderText(value string, limit int) string {
+	trimmed := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if limit <= 0 {
+		return trimmed
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= limit {
+		return trimmed
+	}
+	// Cắt theo rune để không bẻ gãy UTF-8 (nội dung todo có dấu).
+	return strings.TrimSpace(string(runes[:limit])) + "…"
 }
 
 type editReminderCandidate struct {

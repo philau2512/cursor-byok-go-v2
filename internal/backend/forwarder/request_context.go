@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"cursor/gen/agentv1"
@@ -79,6 +80,19 @@ func normalizeRealtimeRequestContextForStorage(requestContext *agentv1.RequestCo
 	}
 	if pr := strings.TrimSpace(requestContext.GetPrAttributionMessage()); pr != "" {
 		normalized.PrAttributionMessage = stringPtr(truncatePromptGuardText("request_context.pr_attribution_message", pr, promptGuardRealtimeTextChars))
+	}
+	// MCP descriptors chỉ được client gửi lên ở turn 1 (static payload). Giữ chúng
+	// trong entry realtime để compaction không làm mất <mcp_file_system>/<mcp_meta_tools>
+	// khỏi model-visible history; projector dedup nên bản cũ không đổi vẫn an toàn prefix cache.
+	if options := requestContext.GetMcpFileSystemOptions(); options != nil {
+		if cloned, ok := proto.Clone(options).(*agentv1.McpFileSystemOptions); ok && cloned != nil {
+			normalized.McpFileSystemOptions = cloned
+		}
+	}
+	if options := requestContext.GetMcpMetaToolOptions(); options != nil {
+		if cloned, ok := proto.Clone(options).(*agentv1.McpMetaToolOptions); ok && cloned != nil {
+			normalized.McpMetaToolOptions = cloned
+		}
 	}
 	if !hasRealtimeRequestContextContent(normalized) && normalized.Env == nil && len(normalized.GitRepos) == 0 {
 		return nil
@@ -325,6 +339,99 @@ func buildSkillDiscoveryMessage(requestContext *agentv1.RequestContext) string {
 		return ""
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+// carryForwardMCPOptions bù MCP descriptors vào request context sống khi client không gửi
+// lên (chúng chỉ có trong payload turn 1). Quét ngược history đã persist để lấy snapshot MCP
+// mới nhất; payload rỗng nhưng tồn tại được coi là tín hiệu "đã clear" nên không bù.
+func carryForwardMCPOptions(requestContext *agentv1.RequestContext, entries []HistoryEntry) *agentv1.RequestContext {
+	if requestContext == nil || len(entries) == 0 {
+		return requestContext
+	}
+	if requestContext.GetMcpFileSystemOptions() != nil || requestContext.GetMcpMetaToolOptions() != nil {
+		return requestContext
+	}
+	for index := len(entries) - 1; index >= 0; index-- {
+		entry := entries[index]
+		if strings.TrimSpace(entry.Kind) != "request_context" || len(entry.Payload) == 0 {
+			continue
+		}
+		prior := &agentv1.RequestContext{}
+		if err := protojson.Unmarshal(entry.Payload, prior); err != nil {
+			continue
+		}
+		priorFileSystem := prior.GetMcpFileSystemOptions()
+		priorMeta := prior.GetMcpMetaToolOptions()
+		if priorFileSystem == nil && priorMeta == nil {
+			continue
+		}
+		cloned, ok := proto.Clone(requestContext).(*agentv1.RequestContext)
+		if !ok || cloned == nil {
+			cloned = requestContext
+		}
+		if priorFileSystem != nil {
+			if options, ok := proto.Clone(priorFileSystem).(*agentv1.McpFileSystemOptions); ok && options != nil {
+				cloned.McpFileSystemOptions = options
+			}
+		}
+		if priorMeta != nil {
+			if options, ok := proto.Clone(priorMeta).(*agentv1.McpMetaToolOptions); ok && options != nil {
+				cloned.McpMetaToolOptions = options
+			}
+		}
+		return cloned
+	}
+	return requestContext
+}
+
+// shouldPersistStaticRequestContext báo hiệu đây là turn ĐẦU TIÊN model-visible history
+// được nạp static context (rules/skills/subagents/MCP descriptors).
+//
+// Điều kiện cũ là turnSeq == 1, nhưng turn 1 không nhất thiết là turn thật:
+//   - prewarm_request cũng đi qua handleRunIntent và chiếm một turnSeq nhưng không mang
+//     request_context, nên user message đầu tiên thành turn 2 và bị strip static;
+//   - conversation import/fork không có entry request_context nào (chỉ có model_message
+//     nhập từ parent, mà parent state không chứa static section).
+//
+// Vì vậy chỉ cần kiểm tra history đã có entry request_context mang static payload chưa.
+func shouldPersistStaticRequestContext(entries []HistoryEntry) bool {
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Kind) != "request_context" || len(entry.Payload) == 0 {
+			continue
+		}
+		prior := &agentv1.RequestContext{}
+		if err := protojson.Unmarshal(entry.Payload, prior); err != nil {
+			continue
+		}
+		if requestContextCarriesStaticPayload(prior) {
+			return false
+		}
+	}
+	return true
+}
+
+// requestContextCarriesStaticPayload nhận diện entry được ghi bằng static normalization:
+// realtime normalization không bao giờ sinh ra các field này. Entry chỉ có env/rules/file
+// contents được coi là chưa có static; ghi lại lần nữa cũng không đổi nội dung render nên
+// projector dedup vẫn giữ nguyên prefix.
+func requestContextCarriesStaticPayload(requestContext *agentv1.RequestContext) bool {
+	if requestContext == nil {
+		return false
+	}
+	return requestContext.GetSkillOptions() != nil ||
+		len(requestContext.GetAgentSkills()) > 0 ||
+		len(requestContext.GetCustomSubagents()) > 0 ||
+		len(requestContext.GetNonFileRules()) > 0 ||
+		len(requestContext.GetTools()) > 0 ||
+		len(requestContext.GetMcpInstructions()) > 0 ||
+		requestContext.GetCloudRule() != "" ||
+		len(requestContext.GetRepositoryInfo()) > 0 ||
+		len(requestContext.GetProjectLayouts()) > 0 ||
+		requestContext.GetConversationNotesListing() != "" ||
+		requestContext.GetSharedNotesListing() != "" ||
+		requestContext.GetDebugModeConfig() != nil ||
+		requestContext.GetMcpFileSystemOptions() != nil ||
+		requestContext.GetMcpMetaToolOptions() != nil
 }
 
 func collectMCPToolServers(requestContext *agentv1.RequestContext) map[string]string {

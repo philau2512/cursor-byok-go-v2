@@ -15,7 +15,7 @@ func pruneToolResultToolCallJSON(toolName string, raw json.RawMessage) json.RawM
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return raw
 	}
-	changed := stripEditFullFileContents(payload)
+	changed := stripEditFullFileContents(payload, patchEditReplayLimit(toolName))
 	if compactProjectedShellFields(payload) {
 		changed = true
 	}
@@ -29,7 +29,7 @@ func pruneToolResultToolCallJSON(toolName string, raw json.RawMessage) json.RawM
 	return clean
 }
 
-func stripEditFullFileContents(val any) bool {
+func stripEditFullFileContents(val any, diffLimit int) bool {
 	changed := false
 	switch item := val.(type) {
 	case map[string]any:
@@ -38,6 +38,7 @@ func stripEditFullFileContents(val any) bool {
 		beforeContent := ""
 		afterContent := ""
 		diffString := ""
+		diffKey := ""
 
 		for k, v := range item {
 			strVal, isStr := v.(string)
@@ -55,6 +56,7 @@ func stripEditFullFileContents(val any) bool {
 			case "diffString", "diff_string":
 				if isStr {
 					diffString = strings.TrimSpace(strVal)
+					diffKey = k
 				}
 			}
 		}
@@ -65,23 +67,32 @@ func stripEditFullFileContents(val any) bool {
 				diffString = strings.TrimSpace(diff)
 			}
 			if diffString != "" {
+				if diffLimit > 0 && len(diffString) > diffLimit {
+					diffString = truncateProjectedReplayText("Edit", diffString, diffLimit)
+				}
 				item["diffString"] = diffString
+				if diffKey == "diff_string" {
+					delete(item, "diff_string")
+				}
 			}
 			delete(item, "beforeFullFileContent")
 			delete(item, "before_full_file_content")
 			delete(item, "afterFullFileContent")
 			delete(item, "after_full_file_content")
 			changed = true
+		} else if diffKey != "" && diffLimit > 0 && len(diffString) > diffLimit {
+			item[diffKey] = truncateProjectedReplayText("Edit", diffString, diffLimit)
+			changed = true
 		}
 
 		for _, child := range item {
-			if stripEditFullFileContents(child) {
+			if stripEditFullFileContents(child, diffLimit) {
 				changed = true
 			}
 		}
 	case []any:
 		for _, child := range item {
-			if stripEditFullFileContents(child) {
+			if stripEditFullFileContents(child, diffLimit) {
 				changed = true
 			}
 		}

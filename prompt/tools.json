@@ -70,7 +70,7 @@
     },
     {
       "function": {
-        "description": "Call an MCP tool by server identifier and tool name with structured arguments matching the tool's parameter schema. If an MCP error occurs, inspect it, correct arguments or authentication, and retry only when appropriate.",
+        "description": "Call an MCP tool by server identifier and tool name with structured arguments matching the tool's parameter schema. Proactively check mcp_file_system or mcp_meta_tools for specialized MCP tools before falling back to manual Grep/Shell. If a tool's input_schema is deferred (not shown inline), you MUST Read its definition_path JSON first to inspect exact parameter names, types, and required fields before calling. If an MCP error occurs, inspect it, correct arguments or authentication, and retry only when appropriate.",
         "name": "CallMcpTool",
         "parameters": {
           "properties": {
@@ -540,12 +540,12 @@
     },
     {
       "function": {
-        "description": "Update the status of existing todos ONLY when a structured plan is active and explicitly requested by the user. Do not call continuously during routine execution.\n\nRules:\n- Set merge=false when initializing or replacing the checklist for a new plan.\n- Set merge=true for incremental status updates by id without overwriting the list.",
+        "description": "Update todos by id while working through an active checklist, so progress stays visible and verifiable step by step.\n\nRules:\n- merge=true updates items by id and KEEPS every existing item it does not mention (unknown ids are appended). Use it only for status ticks inside the current checklist: sending only {id, status} is enough, cheap and the expected call.\n- merge=false replaces the checklist. It is rejected while an earlier item is still pending or in_progress, so for a new task close the previous checklist first (mark the leftovers completed or cancelled), or build the new checklist with CreatePlan, which resets the list on the next update.\n- Always state merge explicitly. If merge is omitted and the payload drops an active id, the server silently treats the call as merge=true and appends to the old list.\n- Do not resend content or fields that are unchanged, and do not call this tool for routine work that has no checklist.",
         "name": "TodoWrite",
         "parameters": {
           "properties": {
             "merge": {
-              "description": "Whether to merge the todos with existing todos. IMPORTANT: Set merge=false when initializing a checklist for a new task or new plan to clear old tasks and replace the list. Set merge=true for incremental progress updates by id without overwriting the list.",
+              "description": "Whether the listed todos merge into the existing checklist (true) or replace it (false). Use merge=true for status ticks on the current checklist: items you do not mention are kept. Use merge=false to start a fresh checklist, which only succeeds once no earlier todo is still pending or in_progress (close those out first) or right after CreatePlan created a new plan.",
               "type": "boolean"
             },
             "todos": {
@@ -633,32 +633,42 @@
     },
     {
       "function": {
-        "description": "Create a structured implementation plan with todos. Use ONLY when the user explicitly requests a plan (e.g. 'lên plan', 'lập kế hoạch', 'plan first') or when entering Plan Mode. Do NOT call for routine coding or bug fixes.",
+        "description": "Create a structured implementation plan together with the executable todo checklist you will then work through. Use ONLY when the user explicitly requests a plan (e.g. 'lên plan', 'lập kế hoạch', 'save the plan') or when entering a plan-mode workflow that names the plan UI as its output. Do NOT call for routine coding or bug fixes.\n\nChecklist contract (this is what keeps step-by-step execution from drifting):\n- `todos` is a 1:1 mirror of the plan's Steps section, in execution order: one item per verifiable step.\n- Each item needs a stable id (t1, t2, ...) because TodoWrite updates progress by id, and a `content` naming the concrete artifact it changes or checks.\n- Work exactly one item at a time. Tick it in_progress with TodoWrite merge=true when you start, and completed as soon as it is verified with evidence (a passing command, an inspected diff, a read of the changed line).\n- Do not mark an item completed from assumption, and do not leave more than one item in_progress.",
         "name": "CreatePlan",
         "parameters": {
           "properties": {
             "name": {
-              "description": "A short 3-4 word name for the plan. IMPORTANT: Provide this only on the first CreatePlan call when no current plan exists. If a current plan already exists, omit this field entirely; do not use it to rename or create a separate plan.",
+              "description": "A short 3-4 word name for the plan. IMPORTANT: Provide this only on the first CreatePlan call when no current plan exists. If a current plan already exists, omit this field entirely; the server strips it, so it can never rename or fork the current plan.",
               "type": "string"
             },
             "overview": {
-              "description": "A 1-2 sentence high-level description of the plan that summarizes what will be accomplished",
+              "description": "A 1-2 sentence outcome summary: what will be true once the plan is done. This is the one-liner shown in the plan list, not the body; do not restate the `plan` content here.",
               "type": "string"
             },
             "plan": {
-              "description": "A detailed, concrete plan for accomplishing the user's request",
+              "description": "Markdown body, detailed enough that a later turn or another agent can implement it without re-investigating. Use ### sections in this order: Goal & success criteria; Steps (each names the exact file paths and the tool that will change them); Verification (command or check per step); Assumptions & open questions; Risks & rollback. Keep the Steps section aligned 1:1 with `todos` and stay under ~200 lines to avoid stream timeouts.",
               "type": "string"
             },
             "todos": {
-              "description": "Array of implementation todos",
+              "description": "Ordered, executable checklist mirroring the plan's Steps section. At most one item should start as in_progress; omit status to default to pending.",
               "items": {
                 "properties": {
                   "content": {
-                    "description": "Description of the todo task",
+                    "description": "One imperative line naming the concrete artifact, e.g. \"Add status field to CreatePlan todos in prompt/tools.json\" or \"Run go test ./internal/backend/forwarder\".",
                     "type": "string"
                   },
                   "id": {
-                    "description": "Unique identifier for the todo",
+                    "description": "Stable unique identifier for the todo (e.g. \"t1\"). TodoWrite addresses items by this id, so keep ids short and unchanged.",
+                    "type": "string"
+                  },
+                  "status": {
+                    "description": "Initial status of the step.",
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed",
+                      "cancelled"
+                    ],
                     "type": "string"
                   }
                 },
@@ -668,9 +678,15 @@
                 ],
                 "type": "object"
               },
+              "minItems": 1,
               "type": "array"
             }
           },
+          "required": [
+            "plan",
+            "overview",
+            "todos"
+          ],
           "type": "object"
         }
       },
@@ -748,7 +764,7 @@
     {
       "function": {
         "name": "SaveMemory",
-        "description": "Persist a durable project memory for future conversations in this workspace. EVERY call MUST include ALL FOUR required fields: title, category, content, origin — omitting ANY of them fails the save and wastes a retry.\n\nSave ONLY when the information is stable beyond the current task: a user-stated preference or correction, a verified pitfall with root cause, an architectural decision with rationale, or a build/test/environment fact confirmed by execution. Do NOT save: secrets/credentials, task-local progress, speculation, or anything already in AGENTS.md/rules files. If a similar memory exists, SearchMemory first and re-save with the SAME title to update it.\n\nField rules:\n- title (REQUIRED): 3-10 words, 3-100 characters, a short stable NAME like \"Order Delivery Status Conventions\" — not a sentence, never merged into content. It is the upsert key.\n- category (REQUIRED): one enum value; pick the most specific.\n- content (REQUIRED): 1-4000 chars, declarative, self-contained (readable without this conversation). Include exact commands/paths when relevant.\n- origin (REQUIRED): \"user\" only when the user explicitly asked to remember this; otherwise \"model\". The value \"auto\" is reserved for system capture and is rejected.\n- keywords: 0-8 short noun phrases. usage_scenario: 0-3, each <=160 chars, phrased as \"When <situation>, <action>\".",
+        "description": "Persist durable project memory for future sessions in this workspace. PROACTIVELY call this tool immediately (zero-delay) without waiting for user prompts whenever a lasting lesson, pattern, or pitfall is verified. EVERY call MUST include ALL FOUR required fields: title, category, content, origin — omitting ANY fails the save.\n\nMandatory Triggers (Save Immediately in the same turn):\n1. Root-cause Pitfalls: Diagnosed and resolved a non-obvious bug, crash, build/runtime failure, or framework trap. Category: 'common_pitfalls_experience'.\n2. Reusable Conventions: Established a project-specific pattern, utility convention, architecture decision, or API rule. Category: 'development_practice_specification' or 'important_decision_experience'.\n3. User Corrections: User states a lasting preference, clarifies domain rules, or corrects your behavior. Origin: 'user'.\n\nRules:\n- Save immediately when verified; do NOT postpone to the end of the task.\n- Do NOT save: secrets/credentials, transient progress, speculation, or duplicates (SearchMemory first; re-save with SAME title to upsert).\n- title (REQUIRED): 3-10 words, stable name as upsert key (e.g. \"Order Delivery Status Conventions\").\n- category (REQUIRED): one enum value; pick the most specific.\n- content (REQUIRED): 1-4000 chars, self-contained with root cause and verified fix/rule.\n- origin (REQUIRED): 'user' only when explicitly instructed or corrected; otherwise 'model'.\n- keywords (0-8) & usage_scenario (0-3 phrased as 'When <situation>, <action>').",
         "parameters": {
           "type": "object",
           "properties": {

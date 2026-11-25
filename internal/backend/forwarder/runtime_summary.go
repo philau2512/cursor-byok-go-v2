@@ -101,7 +101,7 @@ func (service *Service) bootstrapRuntimeConversation(intent InboundIntent) (*Con
 	if err != nil {
 		return nil, agentv1.AgentMode_AGENT_MODE_AGENT, 0, nil, err
 	}
-	entries, err := buildRunEntries(intent, effectiveMode, turnSeq)
+	entries, err := buildRunEntries(intent, effectiveMode, turnSeq, conversation.Entries)
 	if err != nil {
 		return nil, agentv1.AgentMode_AGENT_MODE_AGENT, 0, nil, err
 	}

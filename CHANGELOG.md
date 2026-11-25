@@ -31,7 +31,6 @@ go test ./...
 
 - **Prompt and tool caching**: Introduced caching for baseline tools, sanitized prompts, and tool catalogs across modes to eliminate redundant disk reads.
 - **Shell dispatch recovery**: Added a recovery timer and mechanism when client fails to acknowledge shell execution within the dispatch deadline.
-- **Python / Node.js unbuffered streaming**: Enriched PowerShell shell commands with environment flags (`PYTHONUNBUFFERED=1`, `NODE_NO_WARNINGS=1`) to eliminate stdout buffering during command streaming.
 - **Compact context serialization**: Serialized conversation context snapshots with compact JSON (omitting extra whitespace) to save memory, disk I/O, and CPU time.
 - **Active conversation protection**: Added logic and tests to ignore empty resume run requests while a turn is actively running.
 - **Enhanced checkpoint blob management**: Refactored timer tokens and pending blob metadata tracking with lifecycle metrics.

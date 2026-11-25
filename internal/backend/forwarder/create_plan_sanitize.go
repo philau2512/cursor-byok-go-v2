@@ -16,6 +16,12 @@ func (service *Service) sanitizeCreatePlanInvocationForCurrentPlan(stream *Activ
 	if err != nil {
 		return invocation, newRecoverableToolInvocationError(fmt.Errorf("decode CreatePlan args failed: %w", err))
 	}
+	// Chặn cuộc gọi rỗng: nếu để lọt, Cursor vẫn trả planUri và conversation bị
+	// hasCurrentPlan()==true với plan trống, khiến `name` bị strip vĩnh viễn ở các lần sau.
+	if strings.TrimSpace(args.GetPlan()) == "" && len(flattenCreatePlanTodos(args)) == 0 {
+		return invocation, newRecoverableToolInvocationError(fmt.Errorf(
+			"CreatePlan requires a non-empty `plan` body and a `todos` checklist; resend it with both fields filled in"))
+	}
 	if strings.TrimSpace(args.GetName()) == "" {
 		return invocation, nil
 	}

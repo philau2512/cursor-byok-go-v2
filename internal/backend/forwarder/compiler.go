@@ -43,6 +43,15 @@ func NewPromptCompiler(projector *HistoryProjector, catalog ToolCatalog, reminde
 
 // Compile 生成当前 turn 应发送给 provider 的消息和工具集合。
 func (compiler *DefaultPromptCompiler) Compile(conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string, modelName string) (CompiledConversation, error) {
+	return compiler.compile(conversation, mode, latestUserText, modelName, true)
+}
+
+// CompileForTokenEstimate 生成用于 checkpoint token 统计的编译结果，跳过 stableReplayMessageCount 与图片 blob 注入以避免重复投影。
+func (compiler *DefaultPromptCompiler) CompileForTokenEstimate(conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string, modelName string) (CompiledConversation, error) {
+	return compiler.compile(conversation, mode, latestUserText, modelName, false)
+}
+
+func (compiler *DefaultPromptCompiler) compile(conversation *ConversationFile, mode agentv1.AgentMode, latestUserText string, modelName string, forProvider bool) (CompiledConversation, error) {
 	if compiler == nil || compiler.projector == nil || compiler.catalog == nil {
 		return CompiledConversation{}, fmt.Errorf("prompt compiler dependencies are not initialized")
 	}
@@ -91,13 +100,16 @@ func (compiler *DefaultPromptCompiler) Compile(conversation *ConversationFile, m
 			Content: systemText,
 		})
 	}
-	stableReplayCount, err := compiler.stableReplayMessageCount(conversation, replayMessages)
-	if err != nil {
-		return CompiledConversation{}, err
-	}
-	replayMessages, err = enrichProviderReadImages(replayMessages, conversation, compiler.blobs)
-	if err != nil {
-		return CompiledConversation{}, err
+	stableReplayCount := 0
+	if forProvider {
+		stableReplayCount, err = compiler.stableReplayMessageCount(conversation, replayMessages)
+		if err != nil {
+			return CompiledConversation{}, err
+		}
+		replayMessages, err = enrichProviderReadImages(replayMessages, conversation, compiler.blobs)
+		if err != nil {
+			return CompiledConversation{}, err
+		}
 	}
 	messages = append(messages, replayMessages...)
 	return CompiledConversation{
