@@ -934,6 +934,47 @@ func extractMessages(text string, moduleStarts []int) []Message {
 		})
 	}
 
+	// Pattern 3: @bufbuild/protobuf makeMessageType("pkg.Msg", () => [...]) or []
+	makeMsgRe := regexp.MustCompile(`([\w$]+)\s*=\s*[\w$.]+\.makeMessageType\s*\(\s*["']([\w.]+)["']\s*,`)
+	makeMsgMatches := makeMsgRe.FindAllStringSubmatchIndex(text, -1)
+	for _, m := range makeMsgMatches {
+		varName := text[m[2]:m[3]]
+		typeName := text[m[4]:m[5]]
+
+		alreadyExists := false
+		for _, existing := range messages {
+			if existing.TypeName == typeName && existing.VarName == varName {
+				alreadyExists = true
+				break
+			}
+		}
+		if alreadyExists {
+			continue
+		}
+
+		lookaheadEnd := m[1] + 80
+		if lookaheadEnd > len(text) {
+			lookaheadEnd = len(text)
+		}
+		relBracket := strings.IndexByte(text[m[1]:lookaheadEnd], '[')
+		var fields []Field
+		if relBracket >= 0 {
+			fields = extractFieldArray(text, m[1]+relBracket)
+		}
+
+		pkg, shortName := parseTypeName(typeName)
+		messages = append(messages, Message{
+			TypeName:     typeName,
+			VarName:      varName,
+			InternalName: "",
+			Fields:       fields,
+			Package:      pkg,
+			ShortName:    shortName,
+			Pos:          m[0],
+			ModuleStart:  moduleStartForPos(moduleStarts, m[0]),
+		})
+	}
+
 	return messages
 }
 
@@ -1139,6 +1180,38 @@ func extractEnums(text string, moduleStarts []int) []Enum {
 			ModuleStart: moduleStartForPos(moduleStarts, match[0]),
 		}
 		enums = append(enums, enum)
+	}
+
+	// Pattern 2: VarName = X.makeEnum("xxx.v1.EnumName", [...])
+	makeEnumRe := regexp.MustCompile(`([\w$]+)\s*=\s*[\w$.]+\.makeEnum\s*\(\s*["']([\w.]+)["']\s*,\s*\[`)
+	makeEnumMatches := makeEnumRe.FindAllStringSubmatchIndex(text, -1)
+	for _, match := range makeEnumMatches {
+		varName := text[match[2]:match[3]]
+		typeName := text[match[4]:match[5]]
+
+		alreadyExists := false
+		for _, existing := range enums {
+			if existing.TypeName == typeName && existing.VarName == varName {
+				alreadyExists = true
+				break
+			}
+		}
+		if alreadyExists {
+			continue
+		}
+
+		bracketStart := match[1] - 1
+		values := extractEnumValues(text, bracketStart)
+		pkg, shortName := parseTypeName(typeName)
+		enums = append(enums, Enum{
+			TypeName:    typeName,
+			VarName:     varName,
+			Values:      values,
+			Package:     pkg,
+			ShortName:   shortName,
+			Pos:         match[0],
+			ModuleStart: moduleStartForPos(moduleStarts, match[0]),
+		})
 	}
 
 	return enums

@@ -406,27 +406,44 @@ func (service *Service) BidiAppend(ctx context.Context, req *connect.Request[ais
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("request_id is required"))
 	}
 	appendSeqno := req.Msg.GetAppendSeqno()
+	dataBinary := req.Msg.GetDataBinary()
 	dataHex := req.Msg.GetData()
+	rawHexForDebug := dataHex
+	if len(dataBinary) > 0 {
+		rawHexForDebug = hex.EncodeToString(dataBinary)
+	}
+	if len(dataBinary) == 0 && strings.TrimSpace(dataHex) == "" {
+		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, "", "empty_payload", nil)
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("bidi append payload is empty"))
+	}
 	appendTicket, staleAppend, err := service.appendSeq.Acquire(ctx, requestID, appendSeqno)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeCanceled, err)
 	}
 	if staleAppend {
 		log.Printf("forwarder ignored stale bidi append request_id=%s append_seqno=%d", requestID, appendSeqno)
-		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, dataHex, "stale", nil)
+		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, rawHexForDebug, "stale", nil)
 		return connect.NewResponse(&aiserverv1.BidiAppendResponse{}), nil
 	}
 	defer appendTicket.Release()
-	message, clientKind, err := protocol.DecodeAgentClientMessage(dataHex)
+	var (
+		message    *agentv1.AgentClientMessage
+		clientKind string
+	)
+	if len(dataBinary) > 0 {
+		message, clientKind, err = protocol.DecodeAgentClientMessageBytes(dataBinary)
+	} else {
+		message, clientKind, err = protocol.DecodeAgentClientMessage(dataHex)
+	}
 	if err != nil {
-		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, dataHex, "decode_error", map[string]any{
+		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, rawHexForDebug, "decode_error", map[string]any{
 			"error": err.Error(),
 		})
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	intent, err := service.decodeInboundIntent(requestID, message, clientKind)
 	if err != nil {
-		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, dataHex, "intent_error", map[string]any{
+		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, rawHexForDebug, "intent_error", map[string]any{
 			"client_kind": strings.TrimSpace(clientKind),
 			"error":       err.Error(),
 		})
@@ -435,7 +452,7 @@ func (service *Service) BidiAppend(ctx context.Context, req *connect.Request[ais
 		})
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	service.debug.LogBidiRaw(ctx, requestID, intent.ConversationID, appendSeqno, dataHex, "accepted", map[string]any{
+	service.debug.LogBidiRaw(ctx, requestID, intent.ConversationID, appendSeqno, rawHexForDebug, "accepted", map[string]any{
 		"client_kind": strings.TrimSpace(clientKind),
 	})
 	service.debug.LogBidiDecoded(ctx, requestID, intent.ConversationID, appendSeqno, clientKind, message, intent, nil)
@@ -876,6 +893,11 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 	case "client_heartbeat":
 		intent.Kind = "metadata"
 	default:
+		if message != nil && len(message.ProtoReflect().GetUnknown()) > 0 {
+			log.Printf("forwarder ignored unknown AgentClientMessage branch request_id=%s", intent.RequestID)
+			intent.Kind = "metadata"
+			break
+		}
 		return InboundIntent{}, fmt.Errorf("unsupported client message kind: %s", clientKind)
 	}
 	intent.ManualCompaction = resolveInboundManualCompaction(message, intent.UserMessage)

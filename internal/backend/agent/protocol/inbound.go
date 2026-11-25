@@ -45,6 +45,14 @@ func DecodeAgentClientMessage(hexData string) (*agentv1.AgentClientMessage, stri
 	if err != nil {
 		return nil, "", fmt.Errorf("bidi append data is not valid hex: %w", err)
 	}
+	return DecodeAgentClientMessageBytes(payload)
+}
+
+// DecodeAgentClientMessageBytes decodes raw protobuf bytes into AgentClientMessage and detects its oneof kind.
+func DecodeAgentClientMessageBytes(payload []byte) (*agentv1.AgentClientMessage, string, error) {
+	if len(payload) == 0 {
+		return nil, "", nil
+	}
 	clientMessage := &agentv1.AgentClientMessage{}
 	if err := proto.Unmarshal(payload, clientMessage); err != nil {
 		return nil, "", fmt.Errorf("decode agent client message failed: %w", err)
@@ -78,6 +86,9 @@ func MapClientMessageToCommandKind(message *agentv1.AgentClientMessage, clientKi
 			*agentv1.ConversationAction_BackgroundTaskCompletionAction:
 			return runtimecore.CommandKindConversationActionRecordOnly, nil
 		default:
+			if message.GetConversationAction().GetAction() != nil || len(message.GetConversationAction().ProtoReflect().GetUnknown()) > 0 {
+				return runtimecore.CommandKindConversationActionRecordOnly, nil
+			}
 			return "", fmt.Errorf("unsupported conversation_action payload")
 		}
 	case "exec_client_message":
@@ -91,6 +102,9 @@ func MapClientMessageToCommandKind(message *agentv1.AgentClientMessage, clientKi
 	case "kv_client_message":
 		return runtimecore.CommandKindKVClientMessage, nil
 	default:
+		if message != nil && len(message.ProtoReflect().GetUnknown()) > 0 {
+			return runtimecore.CommandKindClientHeartbeat, nil
+		}
 		return "", fmt.Errorf("unsupported client message kind: %s", clientKind)
 	}
 }
