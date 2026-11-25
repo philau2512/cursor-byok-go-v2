@@ -49,7 +49,6 @@ tasks:
       - gen/agentv1/*.go
       - gen/aiserverv1/*.go
       - gen/aiserverv1/aiserverv1connect/*.go
-      - gen/byoklocalv1/*.go
     preconditions:
       - sh: protoc --version
         msg: "未检测到 protoc，请先安装 Protocol Buffers 编译器。"
@@ -58,14 +57,11 @@ tasks:
       - sh: protoc-gen-connect-go --version >/dev/null 2>&1 || which protoc-gen-connect-go
         msg: "未检测到 protoc-gen-connect-go，请先安装。"
     cmds:
-      - rm -rf ./gen/agentv1 ./gen/aiserverv1 ./gen/byoklocalv1
-      # proto/byok_local_v1.proto là bản BYOK tự viết (hand-port) cho kênh
-      # local subscription tool; chỉ cần giữ tới khi bản sync proto chính thức
-      # chứa các message này, sau đó xóa khỏi danh sách ở dưới.
+      - rm -rf ./gen/agentv1 ./gen/aiserverv1
       # proto/aiserver_compat_v1.proto giữ các type aiserver.v1 mà client 3.32
       # đã xoá khỏi bundle nhưng server còn trả cho client cũ (IsConnected,
       # RepositoryStatus); xóa khi không còn client cũ dùng route đó.
-      - protoc -I ./proto --go_out=. --go_opt=module=cursor --connect-go_out=. --connect-go_opt=module=cursor ./proto/agent_v1.proto ./proto/aiserver_v1.proto ./proto/aiserver_compat_v1.proto ./proto/byok_local_v1.proto
+      - protoc -I ./proto --go_out=. --go_opt=module=cursor --connect-go_out=. --connect-go_opt=module=cursor ./proto/agent_v1.proto ./proto/aiserver_v1.proto ./proto/aiserver_compat_v1.proto
       - gofmt -w $(find ./gen -name '*.go' -type f)
 
   go:mod:tidy:

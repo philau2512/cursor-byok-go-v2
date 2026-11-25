@@ -10,6 +10,14 @@
 - `APP_VERSION` mà Taskfile dẫn xuất đã đọc lại ra `0.0.51` (`go run ./scripts/release version -config ./build/config.yml`), nên ldflags `-X cursor/internal/buildinfo.Version` và tên artifact release sẽ theo bản mới.
 - `frontend/package.json` vẫn `0.0.0` (placeholder, không liên quan tới version app). Khi phát hành chính thức có thể chạy `task common:update:build-assets` (wails3 update build-assets) để wails tự sinh lại metadata.
 
+### Changed: removed hand-ported `proto/byok_local_v1.proto`
+
+- **Điều kiện tự xóa đã thỏa**: header của file ghi "Xóa file này khi bản sync (a) đã chứa các message gốc". Sau `sync:proto` Cursor 3.32.4, `proto/agent_v1.proto` đã khai báo đủ 5 message (`LocalSubscriptionToolDefinition`, `ListLocalSubscriptionTools{Request,Response}`, `CallLocalSubscriptionTool{Request,Response}`) ở dòng 2189/2197/7123/7127/7331 và **diff field-level với bản chép tay là rỗng** — cùng field number, cùng tên, cùng `optional` — nên bản hand-port không còn giá trị tương thích wire.
+- **Lợi ích ngoài dự đoán**: `gen/agentv1/agentv1connect` giờ sinh sẵn `AgentServiceListLocalSubscriptionToolsProcedure` / `AgentServiceCallLocalSubscriptionToolProcedure` (`:65`/`:38`) và 2 method trong `AgentServiceHandler`, nên hai constant tự viết trong `local_subscription_tools.go` được thay bằng constant generated — path không thể lệch khỏi bản sync nữa.
+- **Blast radius**: chỉ `internal/backend/forwarder/local_subscription_tools.go` (18 tham chiếu) và test của nó (7); `host.go:326/331` + `module.go:38/39` vẫn dùng tên constant cũ nên không đổi. Không có nơi nào hardcode tên package `byok.agent.v1` ngoài file generated, và kênh này chưa từng có `connect` stub (file không khai `service`) ⇒ wiring hand-made giữ nguyên.
+- **Dọn pipeline**: `build/Taskfile.yml` `generate:proto` bỏ file khỏi lệnh protoc, bỏ `gen/byoklocalv1` khỏi `rm -rf` và `generates`, xóa 3 dòng comment "chỉ cần giữ tới khi bản sync chứa các message này".
+- **Bằng chứng runtime (chưa kết luận được)**: `app.log` và các file debug trong `history/` có **0** bản ghi `local_subscription_tool*`, tức chưa thấy client thật gọi kênh này trên máy dev. Route vẫn được mount nên hành vi không đổi; đây là "không có bằng chứng được dùng", không phải "chứng minh không dùng".
+
 ### Added: agent.v1 unknown-procedure fallback + InjectContextAction port (kết quả code review)
 
 ### Changes

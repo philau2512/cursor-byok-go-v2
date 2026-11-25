@@ -11,7 +11,6 @@ import (
 	"connectrpc.com/connect"
 
 	"cursor/gen/agentv1"
-	"cursor/gen/byoklocalv1"
 	"cursor/internal/memory"
 	promptassets "cursor/prompt"
 )
@@ -74,7 +73,7 @@ func TestListLocalSubscriptionToolsHonoursMemoryFlag(t *testing.T) {
 	t.Run("enabled exposes memory tools", func(t *testing.T) {
 		service := newLocalSubscriptionTestService(t, true)
 		response, err := service.ListLocalSubscriptionTools(context.Background(),
-			connect.NewRequest(&byoklocalv1.ListLocalSubscriptionToolsRequest{}))
+			connect.NewRequest(&agentv1.ListLocalSubscriptionToolsRequest{}))
 		if err != nil {
 			t.Fatalf("ListLocalSubscriptionTools failed: %v", err)
 		}
@@ -90,7 +89,7 @@ func TestListLocalSubscriptionToolsHonoursMemoryFlag(t *testing.T) {
 	t.Run("disabled publishes nothing", func(t *testing.T) {
 		service := newLocalSubscriptionTestService(t, false)
 		response, err := service.ListLocalSubscriptionTools(context.Background(),
-			connect.NewRequest(&byoklocalv1.ListLocalSubscriptionToolsRequest{}))
+			connect.NewRequest(&agentv1.ListLocalSubscriptionToolsRequest{}))
 		if err != nil {
 			t.Fatalf("ListLocalSubscriptionTools failed: %v", err)
 		}
@@ -103,7 +102,7 @@ func TestListLocalSubscriptionToolsHonoursMemoryFlag(t *testing.T) {
 func TestCallLocalSubscriptionToolRejectsUnknownTool(t *testing.T) {
 	service := newLocalSubscriptionTestService(t, true)
 	_, err := service.CallLocalSubscriptionTool(context.Background(), connect.NewRequest(
-		&byoklocalv1.CallLocalSubscriptionToolRequest{
+		&agentv1.CallLocalSubscriptionToolRequest{
 			ConversationId: "conv-unknown",
 			ToolName:       "NotATool",
 			ToolArgsJson:   "{}",
@@ -119,7 +118,7 @@ func TestCallLocalSubscriptionToolRejectsUnknownTool(t *testing.T) {
 func TestCallLocalSubscriptionToolDisabledIsBusinessError(t *testing.T) {
 	service := newLocalSubscriptionTestService(t, false)
 	response, err := service.CallLocalSubscriptionTool(context.Background(), connect.NewRequest(
-		&byoklocalv1.CallLocalSubscriptionToolRequest{
+		&agentv1.CallLocalSubscriptionToolRequest{
 			ConversationId: "conv-disabled",
 			ToolName:       "SaveMemory",
 			ToolArgsJson:   `{"title":"x","category":"project_introduction","content":"y","origin":"model"}`,
@@ -169,7 +168,7 @@ func TestCallLocalSubscriptionToolSaveThenSearch(t *testing.T) {
 	}
 
 	saved, err := service.CallLocalSubscriptionTool(ctx, connect.NewRequest(
-		&byoklocalv1.CallLocalSubscriptionToolRequest{
+		&agentv1.CallLocalSubscriptionToolRequest{
 			ConversationId: "conv-local-subscription",
 			ToolName:       "SaveMemory",
 			ToolArgsJson:   string(args),
@@ -189,7 +188,7 @@ func TestCallLocalSubscriptionToolSaveThenSearch(t *testing.T) {
 	}
 
 	found, err := service.CallLocalSubscriptionTool(ctx, connect.NewRequest(
-		&byoklocalv1.CallLocalSubscriptionToolRequest{
+		&agentv1.CallLocalSubscriptionToolRequest{
 			ConversationId: "conv-local-subscription",
 			ToolName:       "SearchMemory",
 			ToolArgsJson:   `{"query":"subscription tool registry"}`,

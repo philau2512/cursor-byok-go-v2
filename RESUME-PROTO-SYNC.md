@@ -60,7 +60,9 @@ BREAK agentv1 = **0**; BREAK aiserverv1 = **21**, chia 2 nhóm:
    (`package aiserver.v1; option go_package = "cursor/gen/aiserverv1;aiserverv1";`) chép
    nguyên khối các message trên từ `proto/aiserver_v1.proto` cũ (kèm nested Synced
    oneof). Không trùng tên với bản extract nên không panic registry. Thêm file vào lệnh
-   protoc trong `generate:proto` (build/Taskfile.yml, làm y như `byok_local_v1.proto`).
+   protoc trong `generate:proto` (build/Taskfile.yml). Tiền lệ `byok_local_v1.proto` đã
+   được xóa sau sync 3.32 vì snapshot chính thức chứa đủ message với field number giống
+   hệt — xem CHANGELOG 2026-11-26.
 3. **Sync thật**: `task sync:proto` (cp from_extensions → proto/, rewrite go_package,
    check_proto_sync, generate). Lưu ý `extract:proto`/script hiện chỉ nhận 1 input —
    hoặc nâng script nhận nhiều `-input`, hoặc chạy tay lệnh merged trước rồi cp vào

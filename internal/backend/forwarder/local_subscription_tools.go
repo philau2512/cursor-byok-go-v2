@@ -8,9 +8,11 @@
 // thi", và description + input_schema được lấy thẳng từ prompt/tools.json nên
 // không tồn tại hai bản định nghĩa tool lệch nhau.
 //
-// Thủ tục đăng ký vẫn là path thật của client (/agent.v1.AgentService/...);
-// message wire dùng field number giống hệt bản extract mới, xem
-// proto/byok_local_v1.proto.
+// Thủ tục đăng ký vẫn là path thật của client (/agent.v1.AgentService/...), và
+// message wire lấy thẳng từ bản sync agent_v1.proto: từ khi sync client 3.32,
+// năm message LocalSubscriptionTool* đã nằm trong snapshot chính thức với field
+// number giống hệt bản chép tay trước đây, nên bản hand-port
+// proto/byok_local_v1.proto đã được xóa để không còn hai định nghĩa song song.
 package forwarder
 
 import (
@@ -22,14 +24,16 @@ import (
 
 	"connectrpc.com/connect"
 
-	"cursor/gen/byoklocalv1"
+	"cursor/gen/agentv1"
+	"cursor/gen/agentv1/agentv1connect"
 	promptassets "cursor/prompt"
 )
 
-// Procedure path mà client bản mới gọi.
+// Procedure path mà client bản mới gọi. Dùng constant do connect sinh ra từ
+// agent_v1.proto để path không bao giờ lệch khỏi bản sync.
 const (
-	ListLocalSubscriptionToolsProcedure = "/agent.v1.AgentService/ListLocalSubscriptionTools"
-	CallLocalSubscriptionToolProcedure  = "/agent.v1.AgentService/CallLocalSubscriptionTool"
+	ListLocalSubscriptionToolsProcedure = agentv1connect.AgentServiceListLocalSubscriptionToolsProcedure
+	CallLocalSubscriptionToolProcedure  = agentv1connect.AgentServiceCallLocalSubscriptionToolProcedure
 )
 
 // localSubscriptionTool là một tool BYOK sở hữu, thực thi server-side.
@@ -68,17 +72,17 @@ func localSubscriptionToolSpecs() []localSubscriptionTool {
 }
 
 // subscriptionToolCatalogCache nhớ kết quả parse tools.json theo mode.
-var subscriptionToolCatalogCache sync.Map // promptassets.Mode -> map[string]*byoklocalv1.LocalSubscriptionToolDefinition
+var subscriptionToolCatalogCache sync.Map // promptassets.Mode -> map[string]*agentv1.LocalSubscriptionToolDefinition
 
 // subscriptionToolCatalog trả về definition theo tên tool từ tools.json.
-func subscriptionToolCatalog(mode promptassets.Mode) map[string]*byoklocalv1.LocalSubscriptionToolDefinition {
+func subscriptionToolCatalog(mode promptassets.Mode) map[string]*agentv1.LocalSubscriptionToolDefinition {
 	if cached, ok := subscriptionToolCatalogCache.Load(mode); ok {
-		definitions, typed := cached.(map[string]*byoklocalv1.LocalSubscriptionToolDefinition)
+		definitions, typed := cached.(map[string]*agentv1.LocalSubscriptionToolDefinition)
 		if typed {
 			return definitions
 		}
 	}
-	definitions := make(map[string]*byoklocalv1.LocalSubscriptionToolDefinition)
+	definitions := make(map[string]*agentv1.LocalSubscriptionToolDefinition)
 	rawTools, err := promptassets.ReadTools(mode)
 	if err == nil {
 		var items []json.RawMessage
@@ -97,7 +101,7 @@ func subscriptionToolCatalog(mode promptassets.Mode) map[string]*byoklocalv1.Loc
 }
 
 // parseSubscriptionToolDefinition đọc {function:{name,description,parameters}}.
-func parseSubscriptionToolDefinition(raw json.RawMessage) (*byoklocalv1.LocalSubscriptionToolDefinition, bool) {
+func parseSubscriptionToolDefinition(raw json.RawMessage) (*agentv1.LocalSubscriptionToolDefinition, bool) {
 	var envelope struct {
 		Function struct {
 			Name        string          `json:"name"`
@@ -116,7 +120,7 @@ func parseSubscriptionToolDefinition(raw json.RawMessage) (*byoklocalv1.LocalSub
 	if schema == "" {
 		schema = `{"type":"object","properties":{}}`
 	}
-	return &byoklocalv1.LocalSubscriptionToolDefinition{
+	return &agentv1.LocalSubscriptionToolDefinition{
 		ToolName:        toolName,
 		Description:     strings.TrimSpace(envelope.Function.Description),
 		InputSchemaJson: schema,
@@ -135,8 +139,8 @@ func findLocalSubscriptionTool(name string) (localSubscriptionTool, bool) {
 }
 
 // enabledLocalSubscriptionTools liệt kê tool đang bật, theo thứ tự khai báo.
-func (service *Service) enabledLocalSubscriptionTools() []*byoklocalv1.LocalSubscriptionToolDefinition {
-	definitions := make([]*byoklocalv1.LocalSubscriptionToolDefinition, 0, len(localSubscriptionToolSpecs()))
+func (service *Service) enabledLocalSubscriptionTools() []*agentv1.LocalSubscriptionToolDefinition {
+	definitions := make([]*agentv1.LocalSubscriptionToolDefinition, 0, len(localSubscriptionToolSpecs()))
 	if service == nil {
 		return definitions
 	}
@@ -149,14 +153,14 @@ func (service *Service) enabledLocalSubscriptionTools() []*byoklocalv1.LocalSubs
 		if !ok {
 			// Không có trong catalog thì vẫn expose nhưng không có schema,
 			// để lộ ra lỗi ở tools.json chứ không âm thầm mất tool.
-			definitions = append(definitions, &byoklocalv1.LocalSubscriptionToolDefinition{
+			definitions = append(definitions, &agentv1.LocalSubscriptionToolDefinition{
 				ToolName: tool.name,
 			})
 			continue
 		}
 		// Tạo message mới cho mỗi response: cache chỉ đọc, không chia sẻ
 		// instance protobuf giữa các request đang chạy song song.
-		definitions = append(definitions, &byoklocalv1.LocalSubscriptionToolDefinition{
+		definitions = append(definitions, &agentv1.LocalSubscriptionToolDefinition{
 			ToolName:        cached.GetToolName(),
 			Description:     cached.GetDescription(),
 			InputSchemaJson: cached.GetInputSchemaJson(),
@@ -168,8 +172,8 @@ func (service *Service) enabledLocalSubscriptionTools() []*byoklocalv1.LocalSubs
 // ListLocalSubscriptionTools trả về tool BYOK publish cho client bản mới.
 func (service *Service) ListLocalSubscriptionTools(
 	ctx context.Context,
-	req *connect.Request[byoklocalv1.ListLocalSubscriptionToolsRequest],
-) (*connect.Response[byoklocalv1.ListLocalSubscriptionToolsResponse], error) {
+	req *connect.Request[agentv1.ListLocalSubscriptionToolsRequest],
+) (*connect.Response[agentv1.ListLocalSubscriptionToolsResponse], error) {
 	if service == nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("forwarder service is nil"))
 	}
@@ -178,14 +182,14 @@ func (service *Service) ListLocalSubscriptionTools(
 		"channel":    "local_subscription_tool",
 		"tool_count": len(tools),
 	})
-	return connect.NewResponse(&byoklocalv1.ListLocalSubscriptionToolsResponse{Tools: tools}), nil
+	return connect.NewResponse(&agentv1.ListLocalSubscriptionToolsResponse{Tools: tools}), nil
 }
 
 // CallLocalSubscriptionTool thực thi tool server-side theo conversation_id.
 func (service *Service) CallLocalSubscriptionTool(
 	ctx context.Context,
-	req *connect.Request[byoklocalv1.CallLocalSubscriptionToolRequest],
-) (*connect.Response[byoklocalv1.CallLocalSubscriptionToolResponse], error) {
+	req *connect.Request[agentv1.CallLocalSubscriptionToolRequest],
+) (*connect.Response[agentv1.CallLocalSubscriptionToolResponse], error) {
 	if service == nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("forwarder service is nil"))
 	}
@@ -200,7 +204,7 @@ func (service *Service) CallLocalSubscriptionTool(
 	}
 	if tool.enabled != nil && !tool.enabled(service) {
 		// Điều kiện nghiệp vụ: trả kết quả lỗi để model đọc được lý do.
-		return connect.NewResponse(&byoklocalv1.CallLocalSubscriptionToolResponse{
+		return connect.NewResponse(&agentv1.CallLocalSubscriptionToolResponse{
 			ResultJson: mustLocalSubscriptionResultJSON("Project memory is disabled."),
 			IsError:    true,
 		}), nil
@@ -222,7 +226,7 @@ func (service *Service) CallLocalSubscriptionTool(
 		"args_bytes":  len(argsJSON),
 		"result_head": headForLocalSubscriptionLog(resultText),
 	})
-	return connect.NewResponse(&byoklocalv1.CallLocalSubscriptionToolResponse{
+	return connect.NewResponse(&agentv1.CallLocalSubscriptionToolResponse{
 		ResultJson: mustLocalSubscriptionResultJSON(resultText),
 		IsError:    isError,
 	}), nil
