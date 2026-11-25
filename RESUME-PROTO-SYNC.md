@@ -1,5 +1,10 @@
 # RESUME — sync proto Cursor 3.32.4 (nhánh `feat/sync-client-proto-v3.32`)
 
+**CẬP NHẬT 2026-11-26: TOÀN BỘ 4 BƯỚC DƯỚI ĐÃ XONG.** Snapshot `proto/` + `gen/` đã
+là bản 3.32.4 thật (kèm compat file), build/vet/test/check_proto_sync đều xanh.
+Chi tiết mục "Kết quả cuối (2026-11-26)" ở cuối file. Phần còn lại duy nhất:
+smoke test tay với client cài thật (mục 4 cũ) và commit khi user yêu cầu.
+
 Trạng thái chốt ở commit **`f8654dc`** (2026-11-25). Build + test xanh ở commit đó.
 **proto snapshot và `gen/` vẫn là bản CŨ** — dùng client bản cũ hoàn toàn an toàn.
 
@@ -77,3 +82,32 @@ BREAK agentv1 = **0**; BREAK aiserverv1 = **21**, chia 2 nhóm:
 - Strict mode (`-strict=true`) sẽ FAIL trên merged output vì hard conflict biến thể
   DA/mf khác bundle — đang chạy `-strict=false`; khi nào extractor xử lý xong biến thể
   trùng tên thì mới cân nhắc bật lại strict.
+  → ĐÃ XỬ LÝ (2026-11-26): variant gate mức định nghĩa + hạ xung đột field/enum/method
+  cross-bundle xuống soft (first-wins, bundle chuẩn đặt đầu), `-strict` bật thường trực
+  trong script và pass exit=0.
+
+## Kết quả cuối (2026-11-26)
+
+1. **Enum normalize**: `compactNormalizeEnumValues` cắt prefix `<PARENT>_<ENUM>_` của
+   enum lồng; re-extract merged6 → BREAK aiserverv1 còn đúng **7** (đúng dự đoán),
+   agentv1 = 0.
+2. **Compat**: tạo `proto/aiserver_compat_v1.proto` (IsConnected req/resp,
+   RepositoryStatus req/resp + nested Synced oneof, BatchRepositoryStatus req/resp),
+   wired vào `generate:proto` trong `build/Taskfile.yml`.
+3. **Pipeline thật**: `proto/extract_extensions_proto.sh` nhận nhiều bundle +
+   auto-detect compact + Windows root + `BUNDLE_PRIORITY` (cursor-always-local đứng
+   đầu để first-wins khớp merged6); Taskfile gọi `bash` tường minh, bỏ precondition
+   macOS-only. `task -t build/Taskfile.yml sync:proto` chạy trọn vẹn exit=0 với
+   `-strict` (unresolved=0, placeholders=0 sau khi siết `placeholderRe`).
+4. **Verify**: fallout compile do field client đổi được xử lý:
+   - `agentv1.Diagnostic.severity` giờ là enum → convert số trong
+     `internal/backend/agent/bridge/exec/bridge.go` (`DiagnosticSeverity(item.GetSeverity())`).
+   - `RequestedModel.is_variant_string_representation` bị client 3.32 xóa → thay bằng
+     suy luận cú pháp model_id: helper `requestedModelUsesVariantString` trong
+     `internal/backend/forwarder/service.go` (dạng `name[...]` và `name:<effort>`),
+     5 call site + 4 fixture test cập nhật theo.
+   - `go build ./...`, `go vet ./...` sạch; `go test ./internal/... ./proto/...`
+     toàn bộ ok; `bash proto/check_proto_sync.sh` exit=0; đối chiếu symbol
+     internal/ dùng vs gen/ mới: missing = **0** cả agentv1 lẫn aiserverv1.
+   - `git_forge_v1.proto`/`origin_v1.proto` biến mất khỏi extract (client không còn
+     khai): internal/ không import package đó nên an toàn.

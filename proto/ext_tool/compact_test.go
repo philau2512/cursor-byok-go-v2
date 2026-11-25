@@ -110,3 +110,44 @@ func TestCompactNameRegistryCorrectsPackage(t *testing.T) {
 		t.Fatalf("typeName = %q, want agent.v1.RequestContextSubagentsPart", messages[0].TypeName)
 	}
 }
+
+// TestCompactNormalizeEnumValuesNestedPrefix: enum lồng trong message lưu tên
+// đầy đủ đường dẫn (ERROR_DETAILS_ERROR_CUSTOM_MESSAGE) trong bundle, nhưng quy
+// ước snapshot cũ chỉ giữ prefix tên enum (ERROR_CUSTOM_MESSAGE). protoc-gen-go
+// nối scope theo tên proto, sai prefix là internal/ mất symbol khi sync.
+func TestCompactNormalizeEnumValuesNestedPrefix(t *testing.T) {
+	in := []EnumValue{
+		{No: 0, Name: "ERROR_DETAILS_ERROR_UNSPECIFIED"},
+		{No: 29, Name: "ERROR_DETAILS_ERROR_CUSTOM_MESSAGE"},
+		{No: 2, Name: "ERROR_NOT_LOGGED_IN"},
+		{No: 4, Name: "PERMISSION_DENIED"},
+	}
+	got := compactNormalizeEnumValues("ErrorDetails.Error", in)
+	want := []string{
+		"ERROR_UNSPECIFIED",
+		"ERROR_CUSTOM_MESSAGE",
+		"ERROR_NOT_LOGGED_IN",
+		"ERROR_PERMISSION_DENIED",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("values = %d, want %d", len(got), len(want))
+	}
+	for index, value := range got {
+		if value.Name != want[index] {
+			t.Errorf("value[%d] = %q, want %q", index, value.Name, want[index])
+		}
+	}
+}
+
+// TestCompactNormalizeEnumValuesTopLevelUnchanged: enum top-level vẫn dùng tên
+// đầy đủ theo prefix enum, không bị cắt gì cả.
+func TestCompactNormalizeEnumValuesTopLevelUnchanged(t *testing.T) {
+	in := []EnumValue{
+		{No: 0, Name: "UNSPECIFIED"},
+		{No: 1, Name: "AGENT_MODE_AGENT"},
+	}
+	got := compactNormalizeEnumValues("AgentMode", in)
+	if got[0].Name != "AGENT_MODE_UNSPECIFIED" || got[1].Name != "AGENT_MODE_AGENT" {
+		t.Fatalf("values = %v, want AGENT_MODE_* names", got)
+	}
+}

@@ -1,0 +1,107 @@
+// Hand-kept definitions for aiserver.v1 types that Cursor 3.32.4 removed from
+// every client bundle, but the BYOK server still needs to answer older clients.
+//
+// Nguồn: khối message cũ trong proto/aiserver_v1.proto trước bản sync 3.32
+// (NetworkService/IsConnected, RepositoryStatus/BatchRepositoryStatus).
+// Client 3.32 không còn mô tả các type này trong descriptor nén của 4 bundle
+// (always-local, agent-host, agent-exec, local-agent-runtime) nên extractor
+// không thể phát hành lại; server vẫn:
+//   - trả route /aiserver.v1.NetworkService/IsConnected cho client cũ
+//     (internal/backend/host.go, upstream/client.go),
+//   - trả /aiserver.v1.RepositoryService/* (forwarder/repository_index_handler.go).
+//
+// Package giữ nguyên aiserver.v1 để gen/aiserverv1 không đổi đường dẫn import.
+// KHÔNG định nghĩa lại type nào đã có trong aiserver_v1.proto (RepositoryInfo
+// chỉ được import, không copy) — trùng tên sẽ panic protobuf registry lúc init.
+// Xóa file này khi không còn client cũ cần các route trên.
+syntax = "proto3";
+
+package aiserver.v1;
+
+import "aiserver_v1.proto";
+
+option go_package = "cursor/gen/aiserverv1;aiserverv1";
+
+// Copied from: local:aiserver.v1.IsConnectedRequest
+message IsConnectedRequest {
+}
+
+// Copied from: local:aiserver.v1.IsConnectedResponse
+message IsConnectedResponse {
+}
+
+// Copied from: local:aiserver.v1.RepositoryStatusRequest
+message RepositoryStatusRequest {
+  RepositoryInfo repository = 1;
+}
+
+// Copied from: local:aiserver.v1.RepositoryStatusResponse
+message RepositoryStatusResponse {
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.AuthTokenNotAuthorized
+  message AuthTokenNotAuthorized {
+  }
+
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.AuthTokenNotFound
+  message AuthTokenNotFound {
+  }
+
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.EmptyMessage
+  message EmptyMessage {
+  }
+
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.NotFound
+  message NotFound {
+  }
+
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.NotSubscribed
+  message NotSubscribed {
+  }
+
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.Synced
+  message Synced {
+    string branch = 1;
+    string commit = 2;
+  }
+
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.Syncing
+  message Syncing {
+    string branch = 1;
+    string old_commit = 2;
+    string new_commit = 3;
+    float progress = 4;
+  }
+
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.TooBig
+  message TooBig {
+    int32 max_size = 1;
+  }
+
+  // Copied from: local:aiserver.v1.RepositoryStatusResponse.Uploading
+  message Uploading {
+    float progress = 1;
+  }
+
+  optional bool is_owner = 9;
+  oneof status {
+    NotFound not_found = 1;
+    Uploading uploading = 2;
+    Syncing syncing = 3;
+    Synced synced = 4;
+    NotSubscribed not_subscribed = 5;
+    TooBig too_big = 6;
+    AuthTokenNotFound auth_token_not_found = 7;
+    AuthTokenNotAuthorized auth_token_not_authorized = 8;
+    EmptyMessage error_uploading = 10;
+    EmptyMessage error_syncing = 11;
+  }
+}
+
+// Copied from: local:aiserver.v1.BatchRepositoryStatusRequest
+message BatchRepositoryStatusRequest {
+  repeated RepositoryStatusRequest requests = 1;
+}
+
+// Copied from: local:aiserver.v1.BatchRepositoryStatusResponse
+message BatchRepositoryStatusResponse {
+  repeated RepositoryStatusResponse responses = 1;
+}

@@ -101,22 +101,27 @@ func SetStrictMode(enabled bool) {
 var activeDiagnostics *extractionDiagnostics
 
 var (
-	noRe                 = regexp.MustCompile(`(?:^|[,{]\s*)no:\s*(\d+)`)
-	nameRe               = regexp.MustCompile(`(?:^|[,{]\s*)name:\s*["']([^"']+)["']`)
-	kindRe               = regexp.MustCompile(`(?:^|[,{]\s*)kind:\s*["']([^"']+)["']`)
-	enumTypeRe           = regexp.MustCompile(`[,\s]T:\s*[\w$.]+\.getEnumType\s*\(\s*([\w$.]+)\s*\)`)
-	tRe                  = regexp.MustCompile(`[,\s]T:\s*([\w$.]+)`)
-	oneofRe              = regexp.MustCompile(`oneof:\s*["']([^"']+)["']`)
-	repeatedRe           = regexp.MustCompile(`repeated:\s*(!0|true)`)
-	optRe                = regexp.MustCompile(`opt:\s*(!0|true)`)
-	keyRe                = regexp.MustCompile(`[,\s]K:\s*(\d+)`)
-	mapValueRe           = regexp.MustCompile(`V:\s*\{([^}]*)\}`)
-	mapValueKRe          = regexp.MustCompile(`(?:^|[,{]\s*)kind:\s*["'](\w+)["']`)
-	mapValueTRe          = regexp.MustCompile(`[,\s]T:\s*([\w$.]+)`)
-	shorthandTRe         = regexp.MustCompile(`(?:^|[,\{])\s*T\s*(?:[,\}])`)
-	oneofNameRe          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	fieldNameRe          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	placeholderRe        = regexp.MustCompile(`^\s*(optional\s+|repeated\s+)?[A-Za-z_][A-Za-z0-9_.<>]*\s+(field_\d+|unknown(?:_[A-Za-z0-9_]+)?)\s*=\s*\d+\s*;`)
+	noRe         = regexp.MustCompile(`(?:^|[,{]\s*)no:\s*(\d+)`)
+	nameRe       = regexp.MustCompile(`(?:^|[,{]\s*)name:\s*["']([^"']+)["']`)
+	kindRe       = regexp.MustCompile(`(?:^|[,{]\s*)kind:\s*["']([^"']+)["']`)
+	enumTypeRe   = regexp.MustCompile(`[,\s]T:\s*[\w$.]+\.getEnumType\s*\(\s*([\w$.]+)\s*\)`)
+	tRe          = regexp.MustCompile(`[,\s]T:\s*([\w$.]+)`)
+	oneofRe      = regexp.MustCompile(`oneof:\s*["']([^"']+)["']`)
+	repeatedRe   = regexp.MustCompile(`repeated:\s*(!0|true)`)
+	optRe        = regexp.MustCompile(`opt:\s*(!0|true)`)
+	keyRe        = regexp.MustCompile(`[,\s]K:\s*(\d+)`)
+	mapValueRe   = regexp.MustCompile(`V:\s*\{([^}]*)\}`)
+	mapValueKRe  = regexp.MustCompile(`(?:^|[,{]\s*)kind:\s*["'](\w+)["']`)
+	mapValueTRe  = regexp.MustCompile(`[,\s]T:\s*([\w$.]+)`)
+	shorthandTRe = regexp.MustCompile(`(?:^|[,\{])\s*T\s*(?:[,\}])`)
+	oneofNameRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	fieldNameRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// Placeholder thật chỉ có dạng tên định danh JS bị đưa thẳng vào field name
+	// (unknown_Mc, field_3). Trước đây regex còn bắt cả "unknown" trơ và
+	// unknown_<snake lowercase>, nhưng không code path nào sinh tên kiểu đó nữa
+	// và nó là tên THẬT của upstream (Unknown unknown, unknown_tool_error_template)
+	// nên phải siết: sau unknown_ bắt buộc có ít nhất một HOA/số.
+	placeholderRe        = regexp.MustCompile(`^\s*(optional\s+|repeated\s+)?[A-Za-z_][A-Za-z0-9_.<>]*\s+(field_\d+|unknown_[a-z0-9_]*[A-Z0-9][A-Za-z0-9_]*)\s*=\s*\d+\s*;`)
 	varAliasRe           = regexp.MustCompile(`\b(?:let|const|var)\s+([\w$]+)\s*=\s*([\w$]+)\s*(?:[,;])`)
 	webpackExportBlockRe = regexp.MustCompile(`[\w$]+\.d\(\s*[\w$]+\s*,\s*\{`)
 	webpackExportEntryRe = regexp.MustCompile(`(?:^|[,\{])\s*([\w$]+)\s*:\s*\(\s*\)\s*=>\s*([\w$]+)`)

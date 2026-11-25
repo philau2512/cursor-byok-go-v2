@@ -400,7 +400,7 @@ func requestedModelPayload(model *agentv1.RequestedModel) map[string]any {
 		"model_id":                         strings.TrimSpace(model.GetModelId()),
 		"max_mode":                         model.GetMaxMode(),
 		"built_in_model":                   model.GetBuiltInModel(),
-		"is_variant_string_representation": model.GetIsVariantStringRepresentation(),
+		"is_variant_string_representation": requestedModelUsesVariantString(model.GetModelId()),
 		"parameters":                       parameters,
 	}
 }

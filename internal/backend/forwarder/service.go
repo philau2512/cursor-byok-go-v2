@@ -100,7 +100,7 @@ func parseSubagentModelOverrides(items []*agentv1.SubagentModelOverride) parsedS
 				MaxMode:                       model.GetMaxMode(),
 				ParameterCount:                len(model.GetParameters()),
 				BuiltInModel:                  model.GetBuiltInModel(),
-				IsVariantStringRepresentation: model.GetIsVariantStringRepresentation(),
+				IsVariantStringRepresentation: requestedModelUsesVariantString(model.GetModelId()),
 			}
 		case *agentv1.SubagentModelOverride_Inherit:
 			parsedSelection = runtimecore.SubagentModelOverrideSelection{
@@ -3554,7 +3554,7 @@ func extractRequestedModelIDFromRequestedModel(model *agentv1.RequestedModel) st
 	if model == nil {
 		return ""
 	}
-	if model.GetIsVariantStringRepresentation() {
+	if requestedModelUsesVariantString(model.GetModelId()) {
 		modelID, _ := splitRuntimeThinkingEffortVariantString(model.GetModelId())
 		return modelID
 	}
@@ -3586,7 +3586,7 @@ func extractRuntimeThinkingEffortFromRequestedModel(model *agentv1.RequestedMode
 			return effort
 		}
 	}
-	if model.GetIsVariantStringRepresentation() {
+	if requestedModelUsesVariantString(model.GetModelId()) {
 		if _, effort := splitRuntimeThinkingEffortVariantString(model.GetModelId()); effort != "" {
 			return effort
 		}
@@ -3662,6 +3662,26 @@ func splitRuntimeThinkingEffortVariantString(raw string) (string, string) {
 	return modelID, effort
 }
 
+// requestedModelUsesVariantString quyết định model_id có mang dạng variant
+// "name[...]" hoặc "name:effort" hay không. Client 3.32 đã bỏ flag
+// is_variant_string_representation khỏi agent.v1.RequestedModel nên phải suy
+// trực tiếp từ chuỗi: dạng ngoặc vuông khi có nội dung trước '[' và đóng bằng
+// ']', dạng dấu hai chấm khi hậu tố normalize được thành token effort hợp lệ
+// (low/medium/high/...). Tên model chứa ':' nhưng hậu tố không phải effort
+// (vd "vertex:gemini-pro") vẫn đi theo đường model-id thường. Client cũ gửi
+// model_id cùng hai dạng này khi bật flag, vì vậy hành vi giữ trên cả hai thế hệ.
+func requestedModelUsesVariantString(modelID string) bool {
+	text := strings.TrimSpace(modelID)
+	if open := strings.Index(text, "["); open > 0 && strings.Index(text, "]") > open {
+		return true
+	}
+	colon := strings.LastIndex(text, ":")
+	if colon > 0 && colon < len(text)-1 {
+		return normalizeRuntimeThinkingEffort(text[colon+1:]) != ""
+	}
+	return false
+}
+
 func extractRequestedContextTokens(message *agentv1.AgentClientMessage) uint32 {
 	if message == nil {
 		return 0
@@ -3689,7 +3709,7 @@ func extractRequestedContextTokensFromRequestedModel(model *agentv1.RequestedMod
 			}
 		}
 	}
-	if model.GetIsVariantStringRepresentation() {
+	if requestedModelUsesVariantString(model.GetModelId()) {
 		text := strings.TrimSpace(model.GetModelId())
 		if idx := strings.Index(text, "["); idx > 0 {
 			bracketContent := text[idx+1:]

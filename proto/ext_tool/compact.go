@@ -1001,8 +1001,24 @@ func (index *compactIndex) reportUnresolved(messageCount, enumCount, serviceCoun
 // ["AGENT_MODE_UNSPECIFIED","AGENT_MODE_AGENT"]) để tiết kiệm byte. Proto3 lại
 // áp C++ scoping: giá trị enum là sibling của enum trong cùng scope, nên nếu
 // không có prefix thì nhiều enum cùng dùng "UNSPECIFIED" sẽ va nhau.
+//
+// Quy ước khớp snapshot cũ: enum lồng (name dạng "ErrorDetails.Error") lưu tên
+// đầy đủ ERROR_DETAILS_ERROR_CUSTOM_MESSAGE trong bundle, nhưng pipeline cũ
+// phát hành ERROR_CUSTOM_MESSAGE — tức chỉ cắt prefix đường dẫn của message
+// cha, giữ prefix tên enum. protoc-gen-go nối theo scope nên tên Go giữa hai
+// bên phải khớp từng ký tự, nếu không internal/ mất symbol khi sync.
 func compactNormalizeEnumValues(enumName string, values []EnumValue) []EnumValue {
-	prefix := compactEnumValuePrefix(enumName)
+	leaf := strings.TrimSpace(enumName)
+	parentPrefix := ""
+	if dot := strings.LastIndex(leaf, "."); dot >= 0 {
+		parent := compactEnumValuePrefix(leaf[:dot])
+		if parent == "" {
+			return values
+		}
+		parentPrefix = parent + "_"
+		leaf = leaf[dot+1:]
+	}
+	prefix := compactEnumValuePrefix(leaf)
 	if prefix == "" {
 		return values
 	}
@@ -1012,6 +1028,9 @@ func compactNormalizeEnumValues(enumName string, values []EnumValue) []EnumValue
 		name := strings.TrimSpace(value.Name)
 		if name == "" {
 			continue
+		}
+		if parentPrefix != "" && strings.HasPrefix(name, parentPrefix) {
+			name = strings.TrimPrefix(name, parentPrefix)
 		}
 		if !strings.HasPrefix(name, prefix) {
 			name = prefix + "_" + name

@@ -3078,7 +3078,10 @@ func convertDiagnostics(items []*agentv1.Diagnostic) []*agentv1.DiagnosticItem {
 			continue
 		}
 		result = append(result, &agentv1.DiagnosticItem{
-			Severity: item.GetSeverity(),
+			// Từ client 3.32, agent.v1.Diagnostic.severity mang enum lồng
+			// Diagnostic.DiagnosticSeverity; hai enum có cùng tập giá trị 0..4
+			// nên quy đổi theo số nguyên là an toàn trên mọi đường wire.
+			Severity: agentv1.DiagnosticSeverity(item.GetSeverity()),
 			Range: &agentv1.DiagnosticRange{
 				Start: item.GetRange().GetStart(),
 				End:   item.GetRange().GetEnd(),

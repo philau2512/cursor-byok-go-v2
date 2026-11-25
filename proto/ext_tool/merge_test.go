@@ -27,6 +27,24 @@ func TestMergeBundlesUnionsFieldsAndGradesConflicts(t *testing.T) {
 		Package:   "agent.v1",
 		Fields:    []Field{{No: 1, Name: "success", Kind: "scalar", T: "bool"}},
 	}
+	renumbered := Message{
+		TypeName:  "agent.v1.EditResult",
+		ShortName: "EditResult",
+		Package:   "agent.v1",
+		Fields: []Field{
+			{No: 2, Name: "feedback", Kind: "scalar", T: "string"},
+			{No: 1, Name: "path", Kind: "scalar", T: "string"},
+		},
+	}
+	retyped := Message{
+		TypeName:  "agent.v1.EditResult",
+		ShortName: "EditResult",
+		Package:   "agent.v1",
+		Fields: []Field{
+			{No: 1, Name: "feedback", Kind: "scalar", T: "bool"},
+			{No: 2, Name: "path", Kind: "scalar", T: "string"},
+		},
+	}
 
 	sameBundle := mergeBundles([]bundleDefs{
 		{ordinal: 0, messages: []Message{shared, clash}},
@@ -41,12 +59,28 @@ func TestMergeBundlesUnionsFieldsAndGradesConflicts(t *testing.T) {
 		t.Fatalf("xung đột trong cùng bundle không được là hard: %+v", sameBundle.conflicts)
 	}
 
+	// Cùng một thế hệ client: bản copy giữa các bundle lệch metadata ở cùng
+	// field là drift descriptor, không phải mâu thuẫn protocol. Chính sách:
+	// báo cáo mềm, giữ bản đầu (first-wins).
 	crossBundle := mergeBundles([]bundleDefs{
-		{ordinal: 0, messages: []Message{shared}},
-		{ordinal: 1, messages: []Message{clash}},
+		{ordinal: 0, messages: []Message{extra}},
+		{ordinal: 1, messages: []Message{retyped}},
 	})
-	if len(crossBundle.hardConflicts()) == 0 {
-		t.Fatal("hai bundle nói khác nhau về cùng field number phải là hard conflict")
+	if len(crossBundle.hardConflicts()) != 0 {
+		t.Fatalf("drift metadata cross-bundle không được là hard conflict: %+v", crossBundle.conflicts)
+	}
+	if got := crossBundle.messages[0].Fields[0]; got.T != "string" {
+		t.Fatalf("first-wins phải giữ feedback string, nhận %v", got)
+	}
+
+	// Đổi số của cùng tên field là tín hiệu hai biến thể trùng tên, không phải
+	// schema bất đồng thật; phải xử lý mềm để -strict không fail trên client 1 thế hệ.
+	renumberPool := mergeBundles([]bundleDefs{
+		{ordinal: 0, messages: []Message{extra}},
+		{ordinal: 1, messages: []Message{renumbered}},
+	})
+	if len(renumberPool.hardConflicts()) != 0 {
+		t.Fatalf("đổi số field trùng tên không được là hard conflict: %+v", renumberPool.conflicts)
 	}
 
 	union := mergeBundles([]bundleDefs{
@@ -100,5 +134,45 @@ func TestMergeBundlesDropsDuplicateFieldName(t *testing.T) {
 		if nameCount["success"] != 1 {
 			t.Fatalf("biến thể đầu phải được giữ, fields = %v", pool.messages[0].Fields)
 		}
+	}
+}
+
+// TestMergeBundlesSkipsForeignVariantDefinition: hai type KHÁC NHAU trùng tên
+// trong cùng package (EditResult bản MCP và bản agent cùng là aiserver.v1)
+// phải được xử lý ở mức định nghĩa: bỏ cả định nghĩa sau, ghi xung đột mềm.
+// Nếu không, -strict fail hàng nghìn "conflict" không có thật và field-level
+// union sinh message lai không tồn tại trong client nào.
+func TestMergeBundlesSkipsForeignVariantDefinition(t *testing.T) {
+	mcpVariant := Message{
+		TypeName: "aiserver.v1.EditResult",
+		Fields: []Field{
+			{No: 1, Name: "success", Kind: "scalar", T: "bool"},
+			{No: 2, Name: "error", Kind: "scalar", T: "string"},
+		},
+	}
+	agentVariant := Message{
+		TypeName: "aiserver.v1.EditResult",
+		Fields: []Field{
+			{No: 1, Name: "path", Kind: "scalar", T: "string"},
+			{No: 2, Name: "old_str", Kind: "scalar", T: "string"},
+			{No: 3, Name: "new_str", Kind: "scalar", T: "string"},
+		},
+	}
+
+	pool := mergeBundles([]bundleDefs{
+		{ordinal: 0, messages: []Message{mcpVariant}},
+		{ordinal: 1, messages: []Message{agentVariant}},
+	})
+	if len(pool.messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(pool.messages))
+	}
+	if len(pool.messages[0].Fields) != 2 {
+		t.Fatalf("biến thể sau phải bị bỏ cả định nghĩa, fields = %v", pool.messages[0].Fields)
+	}
+	if len(pool.hardConflicts()) != 0 {
+		t.Fatalf("variant khác tên trùng type không được là hard conflict: %+v", pool.conflicts)
+	}
+	if len(pool.conflicts) == 0 {
+		t.Fatal("phải ghi lại xung đột mềm để báo cáo còn nhìn thấy")
 	}
 }

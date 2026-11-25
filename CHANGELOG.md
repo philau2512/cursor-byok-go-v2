@@ -2,6 +2,29 @@
 
 > Record local changes by date, newest first. Each change uses a `## YYYY-MM-DD` heading and a separate `###` entry.
 
+## 2026-11-26
+
+### Added: Proto snapshot and `gen/` synced to installed Cursor 3.32.4
+
+### Changes
+
+- **Multi-bundle extraction is now the real pipeline**: `proto/extract_extensions_proto.sh` accepts many bundles, auto-detects compact-descriptor bundles under the macOS *or* Windows installed-Cursor extensions root, and orders them by `BUNDLE_PRIORITY` (`cursor-always-local` first) so first-wins variant selection is stable. `build/Taskfile.yml` invokes the shell scripts via explicit `bash` (Windows cannot exec `.sh` by shebang) and drops the macOS-only precondition.
+- **Compact descriptor fidelity**: `compactNormalizeEnumValues` strips the redundant `<PARENT>_<ENUM>_` prefix from nested enum value names so generated Go symbols keep the short names `internal/` already uses; `placeholderRe` tightened to stop flagging real upstream names (`Unknown unknown`, `unknown_tool_error_template`) as placeholders.
+- **Merge policy for same-name type variants**: definition-level variant gate (`fieldNamesSubset`) plus downgrading cross-bundle field/enum/method drift to soft conflicts make `-strict` a genuine gate (protoc validation + unresolved refs only) instead of ~950 noise lines; regression tests updated in `proto/ext_tool/merge_test.go`.
+- **Compat proto for client-removed types**: new `proto/aiserver_compat_v1.proto` hand-keeps `IsConnected{Request,Response}`, `RepositoryStatus{Request,Response}` (incl. nested `Synced` oneof) and `BatchRepositoryStatus{Request,Response}` — still served to older clients although 3.32.4 bundles deleted them — and is wired into `generate:proto`.
+- **Compile fallout handled**: `Diagnostic.severity` became an enum (`DiagnosticSeverity(item.GetSeverity())` numeric bridge in `internal/backend/agent/bridge/exec/bridge.go`); client-deleted `RequestedModel.is_variant_string_representation` is replaced by syntax inference `requestedModelUsesVariantString` (bracket `name[...]` and colon `name:<effort>` forms) in `internal/backend/forwarder/service.go`, used at all former call sites and test fixtures.
+
+### Verification
+
+```powershell
+task -t build/Taskfile.yml sync:proto   # exit 0, -strict extraction, check_proto_sync green
+go build ./...
+go vet ./...
+go test ./internal/... ./proto/... -count=1
+bash proto/check_proto_sync.sh
+# symbol audit: every agentv1/aiserverv1 symbol used by internal/ exists in regenerated gen/ (missing = 0)
+```
+
 ## 2026-11-25
 
 ### Added: Local subscription tool channel for BYOK-owned tools

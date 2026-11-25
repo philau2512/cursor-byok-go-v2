@@ -179,14 +179,18 @@ func mergeFields(base, incoming []Field, subject string, sameBundle bool, confli
 		if fieldSignature(existing) == fieldSignature(field) {
 			continue
 		}
-		// Ưu tiên định nghĩa có nhiều thông tin hơn (vd một bundle khai optional
-		// rõ ràng), chỉ hard conflict khi tên field cũng khác.
+		// Các bundle của CÙNG một phiên bản client lệch nhau metadata field
+		// (optional thiếu, oneof chưa gán) là drift descriptor, không phải mâu
+		// thuẫn protocol; từng hard conflict kiểu này từng làm -strict chết
+		// với ~900 dòng vô nghĩa. Báo cáo mềm: trong cùng bundle giữ bản đầy
+		// đủ hơn, khác bundle thì first-wins để snapshot theo bundle chuẩn
+		// đặt đầu danh sách (cursor-always-local).
 		if existing.Name == field.Name {
 			*conflicts = append(*conflicts, mergedConflict{
 				Kind: "field", Subject: fmt.Sprintf("%s #%d", subject, field.No),
-				Detail: "hai bản mô tả khác nhau (giữ bản đầy đủ hơn)", Hard: !sameBundle,
+				Detail: "hai bản mô tả khác nhau (giữ bản đầu)", Hard: false,
 			})
-			if len(field.Oneof) > len(existing.Oneof) || field.MapValueKind != "" && existing.MapValueKind == "" {
+			if sameBundle && (len(field.Oneof) > len(existing.Oneof) || field.MapValueKind != "" && existing.MapValueKind == "") {
 				byNumber[field.No] = field
 			}
 			continue
@@ -194,7 +198,7 @@ func mergeFields(base, incoming []Field, subject string, sameBundle bool, confli
 		*conflicts = append(*conflicts, mergedConflict{
 			Kind: "field", Subject: fmt.Sprintf("%s #%d", subject, field.No),
 			Detail: fmt.Sprintf("%s xung đột với %s", existing.Name, field.Name),
-			Hard:   !sameBundle,
+			Hard:   false,
 		})
 	}
 	sort.Ints(order)
@@ -228,7 +232,7 @@ func mergeEnumValues(base, incoming []EnumValue, subject string, sameBundle bool
 		*conflicts = append(*conflicts, mergedConflict{
 			Kind: "enum value", Subject: fmt.Sprintf("%s #%d", subject, value.No),
 			Detail: fmt.Sprintf("%s xung đột với %s", existing.Name, value.Name),
-			Hard:   !sameBundle,
+			Hard:   false,
 		})
 	}
 	sort.Ints(order)
@@ -262,7 +266,7 @@ func mergeMethods(base, incoming []Method, subject string, sameBundle bool, conf
 		*conflicts = append(*conflicts, mergedConflict{
 			Kind: "method", Subject: fmt.Sprintf("%s/%s", subject, method.Name),
 			Detail: fmt.Sprintf("%s->%s khác %s->%s", existing.InputType, existing.OutputType, method.InputType, method.OutputType),
-			Hard:   !sameBundle,
+			Hard:   false,
 		})
 	}
 	sort.Strings(order)
@@ -271,6 +275,24 @@ func mergeMethods(base, incoming []Method, subject string, sameBundle bool, conf
 		merged = append(merged, byName[name])
 	}
 	return merged
+}
+
+// fieldNamesSubset trả true nếu tập tên field của sub bao hàm trong super.
+// Hai định nghĩa cùng tên type mà tên field giao nhau một phần nhưng không
+// bao hàm nhau là hai biến thể độc lập (ví dụ EditResult của MCP và của agent
+// cùng package aiserver.v1): gộp field-level lúc đó chỉ sinh rác xung đột.
+// Chính sách: giữ định nghĩa gặp đầu tiên, bỏ biến thể sau, ghi xung đột mềm.
+func fieldNamesSubset(sub, super []Field) bool {
+	set := make(map[string]bool, len(super))
+	for _, field := range super {
+		set[field.Name] = true
+	}
+	for _, field := range sub {
+		if !set[field.Name] {
+			return false
+		}
+	}
+	return true
 }
 
 // mergeBundles gộp nhiều bundle thành một pool, dedupe theo TypeName.
@@ -286,9 +308,18 @@ func mergeBundles(bundles []bundleDefs) mergedPool {
 	for _, bundle := range bundles {
 		for _, message := range bundle.messages {
 			if position, ok := messageIndex[message.TypeName]; ok {
+				existing := pool.messages[position].Fields
+				if !fieldNamesSubset(existing, message.Fields) && !fieldNamesSubset(message.Fields, existing) {
+					pool.conflicts = append(pool.conflicts, mergedConflict{
+						Kind: "definition", Subject: message.TypeName,
+						Detail: "biến thể khác lặp tên định nghĩa đã chọn (bỏ bản sau)",
+						Hard:   false,
+					})
+					continue
+				}
 				sameBundle := messageOrigin[message.TypeName] == bundle.ordinal
 				pool.messages[position].Fields = mergeFields(
-					pool.messages[position].Fields, message.Fields, message.TypeName, sameBundle, &pool.conflicts)
+					existing, message.Fields, message.TypeName, sameBundle, &pool.conflicts)
 				continue
 			}
 			messageIndex[message.TypeName] = len(pool.messages)
