@@ -407,35 +407,49 @@ func (service *Service) BidiAppend(ctx context.Context, req *connect.Request[ais
 	}
 	appendSeqno := req.Msg.GetAppendSeqno()
 	dataHex := req.Msg.GetData()
+	dataBinary := req.Msg.GetDataBinary()
+	// Debug recorder và tool giải mã chỉ đọc ô hex, nên khi client gửi ở
+	// data_binary phải tự sinh hex tương đương để bản ghi vẫn đủ bằng chứng.
+	rawHex := dataHex
+	if strings.TrimSpace(rawHex) == "" && len(dataBinary) > 0 {
+		rawHex = hex.EncodeToString(dataBinary)
+	}
 	appendTicket, staleAppend, err := service.appendSeq.Acquire(ctx, requestID, appendSeqno)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeCanceled, err)
 	}
 	if staleAppend {
 		log.Printf("forwarder ignored stale bidi append request_id=%s append_seqno=%d", requestID, appendSeqno)
-		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, dataHex, "stale", nil)
+		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, rawHex, "stale", nil)
 		return connect.NewResponse(&aiserverv1.BidiAppendResponse{}), nil
 	}
 	defer appendTicket.Release()
-	message, clientKind, err := protocol.DecodeAgentClientMessage(dataHex)
+	message, clientKind, err := protocol.DecodeAgentClientMessageEnvelope(dataHex, dataBinary)
 	if err != nil {
-		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, dataHex, "decode_error", map[string]any{
+		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, rawHex, "decode_error", map[string]any{
 			"error": err.Error(),
 		})
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	intent, err := service.decodeInboundIntent(requestID, message, clientKind)
 	if err != nil {
-		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, dataHex, "intent_error", map[string]any{
+		service.debug.LogBidiRaw(ctx, requestID, "", appendSeqno, rawHex, "intent_error", map[string]any{
 			"client_kind": strings.TrimSpace(clientKind),
 			"error":       err.Error(),
 		})
 		service.debug.LogBidiDecoded(ctx, requestID, "", appendSeqno, clientKind, message, InboundIntent{RequestID: requestID}, map[string]any{
 			"error": err.Error(),
 		})
+		if !inboundKindCarriesRun(clientKind) {
+			service.debug.LogRuntime(ctx, requestID, "", "inbound_intent_ignored", map[string]any{
+				"client_kind": strings.TrimSpace(clientKind),
+				"error":       err.Error(),
+			})
+			return connect.NewResponse(&aiserverv1.BidiAppendResponse{}), nil
+		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	service.debug.LogBidiRaw(ctx, requestID, intent.ConversationID, appendSeqno, dataHex, "accepted", map[string]any{
+	service.debug.LogBidiRaw(ctx, requestID, intent.ConversationID, appendSeqno, rawHex, "accepted", map[string]any{
 		"client_kind": strings.TrimSpace(clientKind),
 	})
 	service.debug.LogBidiDecoded(ctx, requestID, intent.ConversationID, appendSeqno, clientKind, message, intent, nil)
@@ -697,6 +711,22 @@ func (service *Service) logRunSSEMessage(ctx context.Context, requestID string, 
 	service.debug.LogRunSSE(ctx, requestID, "", eventName, fields)
 }
 
+// inboundKindCarriesRun báo trước một clientKind có phải frame khởi động run
+// hay không. Chỉ hai kind mang run là mất frame sẽ khiến cả vòng chat không bắt
+// đầu được, nên lỗi decode phải ngắt stream. Mọi kind khác (heartbeat, kết quả
+// tool, frame rỗng, hoặc oneof mà bản proto này chưa biết) chỉ là quản trị phiên:
+// ack rồi bỏ qua, vì trả invalid_argument sẽ giết luôn run đang chạy — client
+// 3.32 phát đúng loại frame này nên bản build cũ chết ở
+// "unsupported client message kind: ".
+func inboundKindCarriesRun(clientKind string) bool {
+	switch strings.TrimSpace(clientKind) {
+	case "run_request", "prewarm_request":
+		return true
+	default:
+		return false
+	}
+}
+
 // decodeInboundIntent 把 legacy AgentClientMessage 映射为 forwarder 内部 intent。
 func (service *Service) decodeInboundIntent(requestID string, message *agentv1.AgentClientMessage, clientKind string) (InboundIntent, error) {
 	intent := InboundIntent{
@@ -876,7 +906,10 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 	case "client_heartbeat":
 		intent.Kind = "metadata"
 	default:
-		return InboundIntent{}, fmt.Errorf("unsupported client message kind: %s", clientKind)
+		// agentClientMessageCase trả về tên Go của oneof khi kind không được
+		// nhận diện, nên lỗi lúc nào cũng nói được client đã gửi nhánh nào thay
+		// vì in ra chuỗi rỗng như bản cũ.
+		return InboundIntent{}, fmt.Errorf("unsupported client message kind: %s", firstNonEmpty(strings.TrimSpace(clientKind), agentClientMessageCase(message)))
 	}
 	intent.ManualCompaction = resolveInboundManualCompaction(message, intent.UserMessage)
 	return intent, nil

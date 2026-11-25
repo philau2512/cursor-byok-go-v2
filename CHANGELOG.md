@@ -14,6 +14,29 @@
 - **Compat proto for client-removed types**: new `proto/aiserver_compat_v1.proto` hand-keeps `IsConnected{Request,Response}`, `RepositoryStatus{Request,Response}` (incl. nested `Synced` oneof) and `BatchRepositoryStatus{Request,Response}` — still served to older clients although 3.32.4 bundles deleted them — and is wired into `generate:proto`.
 - **Compile fallout handled**: `Diagnostic.severity` became an enum (`DiagnosticSeverity(item.GetSeverity())` numeric bridge in `internal/backend/agent/bridge/exec/bridge.go`); client-deleted `RequestedModel.is_variant_string_representation` is replaced by syntax inference `requestedModelUsesVariantString` (bracket `name[...]` and colon `name:<effort>` forms) in `internal/backend/forwarder/service.go`, used at all former call sites and test fixtures.
 
+### Fixed: `[invalid_argument] unsupported client message kind: ` when chatting with Cursor 3.32
+
+Symptom on the released build: the first user message aborts with
+`RetriableError: [invalid_argument] unsupported client message kind: ` (kind printed **blank**), so the agent loop
+never starts. Root causes, none of which are proto-snapshot issues:
+
+- `BidiAppendRequest` carries the client frame in either `data` (hex) **or** `data_binary` (raw bytes). Only
+  `GetData()` was ever read anywhere in the repo, so a binary-carrier frame decoded to an empty
+  `AgentClientMessage` and every kind check fell through to the blank-kind error.
+  `protocol.DecodeAgentClientMessageEnvelope(hexData, dataBinary)` now prefers `data_binary` and falls back to hex;
+  `Service.BidiAppend` and the `cursor-proxy-debugger` decoder both use it, and the debug recorder keeps a hex copy
+  of whichever carrier arrived.
+- Unrecognized or empty frames were **fatal** on the legacy unary route while the new bidi `Run` route tolerated
+  them. Shared predicate `inboundKindCarriesRun` now decides both places: only `run_request` / `prewarm_request`
+  decode failures abort the stream; management frames are acked, logged as `inbound_intent_ignored` /
+  `agent_run_inbound_ignored` and dropped.
+- The error text was unhelpful because the blank kind was all it printed; the message now falls back to
+  `agentClientMessageCase(message)` (Go oneof wrapper name) so a future unknown branch names itself.
+
+Regression coverage: `internal/backend/forwarder/bidi_append_payload_test.go` — binary carrier accepted, unknown
+oneof branch acked, empty payload acked, and a genuinely broken `run_request` still rejected with
+`InvalidArgument` naming `conversation_id`.
+
 ### Verification
 
 ```powershell
@@ -21,6 +44,7 @@ task -t build/Taskfile.yml sync:proto   # exit 0, -strict extraction, check_prot
 go build ./...
 go vet ./...
 go test ./internal/... ./proto/... -count=1
+go test ./internal/backend/forwarder/ -run BidiAppend -count=1   # carrier + dung sai frame
 bash proto/check_proto_sync.sh
 # symbol audit: every agentv1/aiserverv1 symbol used by internal/ exists in regenerated gen/ (missing = 0)
 ```

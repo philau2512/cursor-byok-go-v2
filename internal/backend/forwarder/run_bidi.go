@@ -185,9 +185,13 @@ func (service *Service) handleBidiRunFrame(ctx context.Context, requestID string
 		// Không giải được run_request thì cả vòng không bắt đầu được, phải ngắt
 		// stream để client biết; các frame khác (heartbeat, kết quả trả về) thì
 		// bỏ qua có dung sai để không phá provider loop đang chạy.
-		if strings.TrimSpace(clientKind) == "run_request" || strings.TrimSpace(clientKind) == "prewarm_request" {
+		if inboundKindCarriesRun(clientKind) {
 			return false, connect.NewError(connect.CodeInvalidArgument, err)
 		}
+		service.debug.LogRunSSE(ctx, requestID, "", "agent_run_inbound_ignored", map[string]any{
+			"client_kind": strings.TrimSpace(clientKind),
+			"error":       err.Error(),
+		})
 		return false, nil
 	}
 	service.debug.LogBidiRaw(ctx, requestID, intent.ConversationID, 0, rawHex, "accepted", map[string]any{

@@ -37,13 +37,26 @@ func NormalizeRequestID(requestID string) string {
 
 // DecodeAgentClientMessage 解析 hex 文本为 AgentClientMessage，并返回消息类型标签。
 func DecodeAgentClientMessage(hexData string) (*agentv1.AgentClientMessage, string, error) {
-	trimmed := strings.TrimSpace(hexData)
-	if trimmed == "" {
-		return nil, "", nil
-	}
-	payload, err := hex.DecodeString(trimmed)
-	if err != nil {
-		return nil, "", fmt.Errorf("bidi append data is not valid hex: %w", err)
+	return DecodeAgentClientMessageEnvelope(hexData, nil)
+}
+
+// DecodeAgentClientMessageEnvelope 解析 BidiAppendRequest 的上行负载。
+// BidiAppendRequest 有两个承载位：string data（hex）和 bytes data_binary。
+// Client 3.32 có thể gửi nguyên payload nhị phân mà bỏ trống data, nên phải ưu
+// tiên data_binary rồi mới fallback sang hex; đọc một mình data sẽ nhận chuỗi
+// rỗng và mọi frame rơi vào nhánh "kind không xác định".
+func DecodeAgentClientMessageEnvelope(hexData string, dataBinary []byte) (*agentv1.AgentClientMessage, string, error) {
+	payload := dataBinary
+	if len(payload) == 0 {
+		trimmed := strings.TrimSpace(hexData)
+		if trimmed == "" {
+			return nil, "", nil
+		}
+		decoded, err := hex.DecodeString(trimmed)
+		if err != nil {
+			return nil, "", fmt.Errorf("bidi append data is not valid hex: %w", err)
+		}
+		payload = decoded
 	}
 	clientMessage := &agentv1.AgentClientMessage{}
 	if err := proto.Unmarshal(payload, clientMessage); err != nil {

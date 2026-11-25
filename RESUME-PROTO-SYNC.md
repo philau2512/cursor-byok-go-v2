@@ -111,3 +111,20 @@ BREAK agentv1 = **0**; BREAK aiserverv1 = **21**, chia 2 nhóm:
      internal/ dùng vs gen/ mới: missing = **0** cả agentv1 lẫn aiserverv1.
    - `git_forge_v1.proto`/`origin_v1.proto` biến mất khỏi extract (client không còn
      khai): internal/ không import package đó nên an toàn.
+5. **Lỗi chat thật của client 3.32 (không phải do proto)**: bản release chết ở
+   `[invalid_argument] unsupported client message kind: ` với kind **rỗng**. Ba nguyên
+   nhân, cả ba nằm trong internal/, snapshot cũ/mới đều giống nhau nên re-extract
+   không hề sửa được:
+   - `BidiAppendRequest` có hai ô chở payload: `data` (hex) và `data_binary` (bytes).
+     Cả repo chỉ đọc `GetData()` → frame nhị phân parse ra `AgentClientMessage` rỗng →
+     kind "" → mọi switch rơi xuống default. Đã thêm
+     `protocol.DecodeAgentClientMessageEnvelope(hex, binary)` (dùng ở `Service.BidiAppend`
+     và decoder của cursor-proxy-debugger), debug log vẫn giữ bản hex của carrier thật.
+   - Frame lạ/rỗng từng là **fatal** ở đường legacy BidiAppend trong khi đường bidi Run
+     lại dung sai. Gộp thành predicate `inboundKindCarriesRun`: chỉ frame mang run
+     (`run_request`/`prewarm_request`) decode lỗi mới được ngắt stream; frame quản trị
+     thì ack + log `inbound_intent_ignored` / `agent_run_inbound_ignored`.
+   - Thông báo lỗi in toàn chuỗi rỗng nên không tự giải thích được; giờ fallback sang
+     tên wrapper oneof Go (`agentClientMessageCase`).
+   Test hồi quy: `internal/backend/forwarder/bidi_append_payload_test.go` (4 case).
+   **Việc còn lại của bạn**: chạy app thật với client 3.32 để xác nhận end-to-end.
