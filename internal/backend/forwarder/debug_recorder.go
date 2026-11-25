@@ -503,6 +503,12 @@ func conversationActionKind(action *agentv1.ConversationAction) string {
 		return "background_shell_action"
 	case *agentv1.ConversationAction_BackgroundSubagentAction:
 		return "background_subagent_action"
+	case *agentv1.ConversationAction_SubscriptionNotificationAction:
+		return "subscription_notification_action"
+	case *agentv1.ConversationAction_GoalContinuationAction:
+		return "goal_continuation_action"
+	case *agentv1.ConversationAction_InjectContextAction:
+		return "inject_context_action"
 	default:
 		return fmt.Sprintf("%T", action.GetAction())
 	}

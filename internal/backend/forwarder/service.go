@@ -408,10 +408,13 @@ func (service *Service) BidiAppend(ctx context.Context, req *connect.Request[ais
 	appendSeqno := req.Msg.GetAppendSeqno()
 	dataHex := req.Msg.GetData()
 	dataBinary := req.Msg.GetDataBinary()
-	// Debug recorder và tool giải mã chỉ đọc ô hex, nên khi client gửi ở
-	// data_binary phải tự sinh hex tương đương để bản ghi vẫn đủ bằng chứng.
+	// Debug recorder và tool giải mã chỉ đọc ô hex, nên bản ghi phải là hex của
+	// carrier THỰC SỰ đã được decode. DecodeAgentClientMessageEnvelope ưu tiên
+	// data_binary, vì vậy khi hai ô cùng có mặt phải log hex của data_binary thay
+	// vì hex của ô `data` đã bị bỏ qua (nếu không, log sẽ mô tả payload khác
+	// với cái server vừa xử lý).
 	rawHex := dataHex
-	if strings.TrimSpace(rawHex) == "" && len(dataBinary) > 0 {
+	if len(dataBinary) > 0 {
 		rawHex = hex.EncodeToString(dataBinary)
 	}
 	appendTicket, staleAppend, err := service.appendSeq.Acquire(ctx, requestID, appendSeqno)
@@ -845,6 +848,10 @@ func (service *Service) decodeInboundIntent(requestID string, message *agentv1.A
 		if action == nil {
 			return InboundIntent{}, fmt.Errorf("conversation_action payload is required")
 		}
+		// Tách riêng injection trước khi phân nhánh kind: action này mang context
+		// cho run ĐANG chạy nên không được xử lý như user message thường, và cũng
+		// không được im lặng bỏ qua.
+		intent.InjectContext = conversationActionInjectContext(action)
 		intent.UserMessage = extractConversationActionUserMessage(action)
 		intent.PrependUserMessages = extractConversationActionPrependUserMessages(action)
 		intent.RequestContext = extractConversationActionRequestContext(action, &service.prefetchedBlobs)
@@ -1677,6 +1684,7 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 		if intent.HasExplicitMode || intent.StartsRun {
 			return fmt.Errorf("metadata intent requires active request context: %s", intent.RequestID)
 		}
+		service.logInjectContextDropped(intent, "no_active_stream")
 		return nil
 	}
 	backgroundShellToolCallID, backgroundShellActionWasNew := observeBackgroundShellAction(stream, intent.ClientMessage)
@@ -1688,6 +1696,7 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 			stream.UpdatedAt = time.Now().UTC()
 			stream.mu.Unlock()
 		}
+		service.logInjectContextDropped(intent, "conversation_not_initialized")
 		return nil
 	}
 	var entries []HistoryEntry
@@ -1695,6 +1704,8 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 		entries = append(entries, newBackgroundShellActionMetadataEntry(stream.TurnSeq, stream.RequestID, backgroundShellToolCallID, backgroundShellActionSourceClient))
 	}
 	entries = append(entries, backgroundTaskCompletionMetadataEntries(stream.TurnSeq, stream.RequestID, intent.ClientMessage)...)
+	injectEntries := injectContextMetadataEntries(stream.TurnSeq, stream.RequestID, intent.InjectContext)
+	entries = append(entries, injectEntries...)
 	if intent.HasExplicitMode {
 		modeEntry, err := newModeMetadataEntry(stream.TurnSeq, stream.RequestID, intent.Mode, true, intent.ModeSource)
 		if err != nil {
@@ -1723,6 +1734,17 @@ func (service *Service) handleMetadataIntent(intent InboundIntent) error {
 		if _, err := service.appendConversationEntries(stream, stream.ConversationID, entries); err != nil {
 			return err
 		}
+	}
+	if intent.InjectContext != nil {
+		event := "inject_context_applied"
+		if len(injectEntries) == 0 {
+			// Injection tới nơi mà payload không để lại nội dung ghi được: phải
+			// thấy trong log thay vì im lặng, vì đó là dấu hiệu schema drift.
+			event = "inject_context_empty"
+		}
+		fields := injectContextDebugFields(intent.InjectContext)
+		fields["entry_count"] = len(injectEntries)
+		service.debug.LogRuntime(context.Background(), intent.RequestID, stream.ConversationID, event, fields)
 	}
 	if intent.HasExplicitMode {
 		stream.mu.Lock()
@@ -3697,12 +3719,12 @@ func splitRuntimeThinkingEffortVariantString(raw string) (string, string) {
 
 // requestedModelUsesVariantString quyết định model_id có mang dạng variant
 // "name[...]" hoặc "name:effort" hay không. Client 3.32 đã bỏ flag
-// is_variant_string_representation khỏi agent.v1.RequestedModel nên phải suy
-// trực tiếp từ chuỗi: dạng ngoặc vuông khi có nội dung trước '[' và đóng bằng
-// ']', dạng dấu hai chấm khi hậu tố normalize được thành token effort hợp lệ
-// (low/medium/high/...). Tên model chứa ':' nhưng hậu tố không phải effort
-// (vd "vertex:gemini-pro") vẫn đi theo đường model-id thường. Client cũ gửi
-// model_id cùng hai dạng này khi bật flag, vì vậy hành vi giữ trên cả hai thế hệ.
+// is_variant_string_representation khỏi agent.v1.RequestedModel và vẫn gửi
+// effort/context qua field `parameters`, nên suy luận ở đây chỉ là đường tương
+// thích cho client cũ: dạng ngoặc vuông khi có nội dung trước '[' và đóng bằng
+// ']', dạng dấu hai chấm khi hậu tố là token effort canonical. Tên model chứa
+// ':' nhưng hậu tố không phải effort (vd "vertex:gemini-pro") vẫn đi theo đường
+// model-id thường.
 func requestedModelUsesVariantString(modelID string) bool {
 	text := strings.TrimSpace(modelID)
 	if open := strings.Index(text, "["); open > 0 && strings.Index(text, "]") > open {
@@ -3710,9 +3732,24 @@ func requestedModelUsesVariantString(modelID string) bool {
 	}
 	colon := strings.LastIndex(text, ":")
 	if colon > 0 && colon < len(text)-1 {
-		return normalizeRuntimeThinkingEffort(text[colon+1:]) != ""
+		return isCanonicalRuntimeThinkingEffortToken(text[colon+1:])
 	}
 	return false
+}
+
+// isCanonicalRuntimeThinkingEffortToken chỉ nhận đúng bộ token effort mà client
+// dùng khi encode variant string ("name:high"). Alias ("no", "off", "none",
+// "false", "0", "disable") là dung sai cho giá trị effort người dùng nhập ở kênh
+// KHÁC (parameters / thinking_effort), không thuộc vocabulary variant string, nên
+// không được dùng để nhận diện model_id: "proxy:0" hay "vertex:none" là tên model
+// hợp lệ của BYOK và phải được chuyển nguyên vẹn.
+func isCanonicalRuntimeThinkingEffortToken(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "disabled", "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 func extractRequestedContextTokens(message *agentv1.AgentClientMessage) uint32 {

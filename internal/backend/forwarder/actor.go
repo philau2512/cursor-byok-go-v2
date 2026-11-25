@@ -138,6 +138,9 @@ func (service *Service) dispatchInboundIntent(intent InboundIntent) error {
 		return err
 	}
 	if stream == nil {
+		// Đường metadata không có stream thì coi như ACK, nhưng injection bị bỏ
+		// ở đây phải để lại dấu vết: dispatch không bao giờ tới actor.
+		service.logInjectContextDropped(intent, "no_active_stream_on_dispatch")
 		return nil
 	}
 	commandKind, err := commandKindForIntent(intent)

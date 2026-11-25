@@ -128,3 +128,26 @@ BREAK agentv1 = **0**; BREAK aiserverv1 = **21**, chia 2 nhóm:
      tên wrapper oneof Go (`agentClientMessageCase`).
    Test hồi quy: `internal/backend/forwarder/bidi_append_payload_test.go` (4 case).
    **Việc còn lại của bạn**: chạy app thật với client 3.32 để xác nhận end-to-end.
+
+6. **Sau code review toàn diện (26/11), đã làm nốt 3 việc**:
+   - `server.Any("/agent.v1.AgentService/*")` + `agentServiceFallbackAction()`
+     (`internal/backend/host.go`): 14 RPC agent.v1 chưa mount từng 404 (lỗi Class A)
+     nay trả message rỗng đúng framing và LOG tên procedure ⇒ mỗi lần client chạy
+     thật sẽ tự sinh bằng chứng RPC nào cần port thật sự. Test:
+     `internal/backend/host_agent_fallback_test.go` (framing 3 kiểu + wildcard không
+     che route đã mount).
+   - `InjectContextAction` (`internal/backend/forwarder/context_injection.go`):
+     payload `user_context`/`system_context` cho run đang chạy nay append thành
+     prompt_context entry (cùng cơ chế mode_change, giữ prefix cache); ba event
+     `inject_context_applied|empty|dropped` bịt mọi đường im lặng. Test:
+     `context_injection_test.go`. `request_context` bên trong user_context CHƯA có
+     seam áp dụng — chỉ log `request_context_present`, cần port tiếp nếu traffic
+     thật cho thấy client dùng.
+   - Siết `requestedModelUsesVariantString` về token canonical
+     (`isCanonicalRuntimeThinkingEffortToken`) + `rawHex` log đúng carrier đã decode
+     + `conversationActionKind` đủ 15 nhánh. Test:
+     `variant_string_inference_test.go`, `internal/backend/agent/protocol/inbound_test.go`.
+
+   Việc còn mở: capture traffic thật (xem log `agent.v1 procedure chưa có handler`)
+   để quyết định port RPC nào, và xử lý `goal_continuation_action` (message rỗng,
+   hiện chỉ có label debug) nếu client dùng nó làm tín hiệu continue.

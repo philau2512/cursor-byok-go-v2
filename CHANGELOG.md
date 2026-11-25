@@ -4,6 +4,29 @@
 
 ## 2026-11-26
 
+### Added: agent.v1 unknown-procedure fallback + InjectContextAction port (kết quả code review)
+
+### Changes
+
+- **Fallback cho procedure `agent.v1` chưa mount** (`internal/backend/host.go`): client 3.32 khai báo 20 RPC trong `agent.v1.AgentService` nhưng BYOK mới cài 6; 14 RPC còn lại trả HTTP 404 (lỗi "Class A" — tính năng chết hẳn, không triệu chứng). Thêm `server.Any("/agent.v1.AgentService/*")` → `agentServiceFallbackAction()`: trả message rỗng đúng framing theo content-type (unary proto = body rỗng, JSON = `{}`, `connect+` = end-of-stream envelope) **và log tên procedure**, biến mỗi lần chạy thật thành bằng chứng RPC nào client thực sự gọi. Route đã mount không bị che (đã test).
+- **`InjectContextAction` được xử lý thay vì bỏ im lặng** (`internal/backend/forwarder/context_injection.go` + field `InboundIntent.InjectContext`): action mang `user_context{user_message,request_context}` / `system_context{producer,content}` cho run ĐANG chạy (ô `expected_run_id`); trước đây rơi vào `default:` → metadata → mất nội dung không một dòng log. Nay payload được append thành `prompt_context` entry bọc `<system_reminder>` — cùng cơ chế giữa-run mà `mode_change` đang dùng, giữ bất biến "history chỉ append" để không phá prefix cache. `request_context` của user_context chưa có seam nên được log rõ (`request_context_present`) chứ không âm thầm bỏ.
+- **Không còn đường im lặng**: event runtime mới `inject_context_applied` / `inject_context_empty` / `inject_context_dropped(reason=…)` ở cả hai chỗ bỏ rơi thật (`dispatchInboundIntent` khi chưa có stream, `handleMetadataIntent` khi stream đã đóng/chưa khởi tạo).
+- **`requestedModelUsesVariantString` siết về token canonical** (`isCanonicalRuntimeThinkingEffortToken`): chỉ `disabled/low/medium/high/xhigh/max`. Bằng chứng: 3.32 vẫn giữ `RequestedModel.parameters` (field 3) làm kênh effort/context và đã bỏ flag, nên variant string là di sản client cũ; alias `no/off/none/false/0/disable` chỉ là dung sai input ở kênh khác, dùng chúng sẽ cắt nhầm model id BYOK kiểu `proxy:0`, `vertex:none`, `openai:gpt-4o-mini`.
+- **`rawHex` debug log phản chiếu carrier thật đã decode**: nếu client set cả `data` lẫn `data_binary`, decode dùng binary mà log ghi hex của `data` → bản ghi mô tả sai payload server vừa xử lý.
+- **`conversationActionKind` đủ 15 nhánh**: thêm `subscription_notification_action`, `goal_continuation_action`, `inject_context_action` để debug log tự giải thích thay vì in `%T`.
+
+### Verification
+
+```powershell
+go build ./...
+go vet ./...
+go test ./internal/... ./proto/... ./cursor-proxy-debugger/... -count=1
+# test mới: host_agent_fallback_test.go (framing + route precedence),
+# context_injection_test.go (decode/entries/blank payload),
+# variant_string_inference_test.go (canonical vs alias, id nguyên vẹn),
+# protocol/inbound_test.go (carrier hex/binary/both/lỗi)
+```
+
 ### Added: Proto snapshot and `gen/` synced to installed Cursor 3.32.4
 
 ### Changes
