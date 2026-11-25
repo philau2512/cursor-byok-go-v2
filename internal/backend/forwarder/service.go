@@ -317,6 +317,7 @@ type Service struct {
 	// memoryStore + memoryConfig phục vụ project memory (tools, overview, capture).
 	memoryStore  *memory.Store
 	memoryConfig projectMemoryConfig
+	trackedTasks sync.Map
 }
 
 // projectMemoryConfig là seam tới config.Manager cho tính năng project memory.

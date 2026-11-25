@@ -419,6 +419,7 @@ func IsCurrentlySupportedTool(name string) bool {
 		"Glob", "Grep", "ReadLints",
 		"AskQuestion", "CreatePlan", "SwitchMode", "WebSearch", "WebFetch",
 		"TodoWrite", "Task",
+		"ListTrackedTasks", "CreateTrackedTasks", "UpdateTrackedTasks", "DeleteTrackedTasks",
 		"CallMcpTool", "FetchMcpResource":
 		return true
 	default:

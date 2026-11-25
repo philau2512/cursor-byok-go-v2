@@ -853,6 +853,165 @@
         }
       },
       "type": "function"
+    },
+    {
+      "function": {
+        "name": "ListTrackedTasks",
+        "description": "List tracked tasks in the current conversation board, optionally filtered by keys, status categories, or owner.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional list of task keys (e.g. TASK-1) to filter."
+            },
+            "status_categories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional status categories to filter (todo, in_progress, completed, cancelled)."
+            },
+            "owner": {
+              "type": "string",
+              "description": "Optional owner filter."
+            }
+          }
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "name": "CreateTrackedTasks",
+        "description": "Create one or more tracked tasks for multi-step or complex work. Returns assigned keys (e.g. TASK-1) and versions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tasks": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "client_ref": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "todo, in_progress, done, or cancelled"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "parent": {
+                    "type": "string",
+                    "description": "Parent task key or client_ref"
+                  },
+                  "tag": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "internal_notes": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            }
+          },
+          "required": [
+            "tasks"
+          ]
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "name": "UpdateTrackedTasks",
+        "description": "Update existing tracked tasks by key (title, status, owner, parent, tags, internal_notes).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "updates": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "parent": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "integer"
+                  },
+                  "tag": {
+                    "type": "string"
+                  },
+                  "internal_notes": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key"
+                ]
+              }
+            }
+          },
+          "required": [
+            "updates"
+          ]
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "name": "DeleteTrackedTasks",
+        "description": "Delete tracked tasks by key.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "keys": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "keys"
+          ]
+        }
+      },
+      "type": "function"
     }
   ]
 }

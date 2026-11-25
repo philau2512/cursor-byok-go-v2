@@ -6875,6 +6875,12 @@ message ToolCall {
     SearchConversationsToolCall search_conversations_tool_call = 69;
     CreateGoalToolCall create_goal_tool_call = 70;
     UpdateGoalToolCall update_goal_tool_call = 71;
+    ListTrackedTasksToolCall list_tracked_tasks_tool_call = 85;
+    CreateTrackedTasksToolCall create_tracked_tasks_tool_call = 86;
+    UpdateTrackedTasksToolCall update_tracked_tasks_tool_call = 87;
+    DeleteTrackedTasksToolCall delete_tracked_tasks_tool_call = 88;
+    UpdateTrackedTaskStatusesToolCall update_tracked_task_statuses_tool_call = 89;
+    UpdateTrackedTaskTagsToolCall update_tracked_task_tags_tool_call = 91;
   }
 }
 
@@ -7409,6 +7415,321 @@ message WriteSuccess {
   int32 lines_created = 2;
   int32 file_size = 3;
   optional string file_content_after_write = 4;
+}
+
+// TrackedTasks messages extracted from Cursor 3.31.15
+message TrackedTaskDocumentInput {
+  string path = 1;
+  optional string label = 2;
+}
+
+message TrackedTaskUrlInput {
+  string url = 1;
+  optional string label = 2;
+}
+
+message TrackedTaskLinkInput {
+  oneof target {
+    string agent_id = 1;
+    string pr_url = 2;
+    TrackedTaskDocumentInput document = 3;
+    TrackedTaskUrlInput url = 4;
+  }
+}
+
+message TrackedTaskPrLinkView {
+  string url = 1;
+  string opened_by_agent_id = 2;
+  bool counts_for_completion = 3;
+}
+
+message TrackedTaskLinkView {
+  oneof target {
+    string agent_id = 1;
+    TrackedTaskPrLinkView pr = 2;
+    TrackedTaskDocumentInput document = 3;
+    TrackedTaskUrlInput url = 4;
+  }
+}
+
+message TrackedTaskPosition {
+  oneof anchor {
+    string before_key = 1;
+    string after_key = 2;
+  }
+}
+
+message TrackedTaskTagIds {
+  repeated string ids = 1;
+}
+
+message TrackedTaskMemberView {
+  string name = 1;
+  string session_id = 2;
+  bool is_you = 3;
+}
+
+message TrackedTaskStatusInput {
+  optional string id = 1;
+  string label = 2;
+  optional string icon = 3;
+  string category = 4;
+  optional string description = 5;
+}
+
+message TrackedTaskStatusView {
+  string id = 1;
+  string label = 2;
+  string category = 3;
+  uint32 task_count = 4;
+  optional string description = 5;
+}
+
+message TrackedTaskTagInput {
+  optional string id = 1;
+  string label = 2;
+  optional string color = 3;
+}
+
+message TrackedTaskTagView {
+  string id = 1;
+  string label = 2;
+  string color = 3;
+  uint32 task_count = 4;
+}
+
+message NewTrackedTask {
+  optional string client_ref = 1;
+  string title = 2;
+  optional string status = 3;
+  optional string owner = 4;
+  optional string parent = 5;
+  repeated TrackedTaskLinkInput links = 6;
+  optional string tag = 7;
+  optional string internal_notes = 8;
+  repeated string tags = 9;
+}
+
+message TrackedTaskCreated {
+  string client_ref = 1;
+  string key = 2;
+  uint64 version = 3;
+}
+
+message TrackedTaskUpdate {
+  string key = 1;
+  optional string title = 2;
+  optional string status = 3;
+  optional string owner = 4;
+  optional string parent = 5;
+  optional TrackedTaskPosition position = 6;
+  repeated TrackedTaskLinkInput add_links = 7;
+  repeated TrackedTaskLinkInput remove_links = 8;
+  uint64 version = 9;
+  optional string tag = 10;
+  optional string internal_notes = 11;
+  optional TrackedTaskTagIds tags = 12;
+}
+
+message TrackedTaskUpdated {
+  string key = 1;
+  uint64 version = 2;
+  string title = 3;
+  string status_label = 4;
+}
+
+message TrackedTaskConflict {
+  string key = 1;
+  string field = 2;
+  string current_value = 3;
+  string changed_by = 4;
+  uint64 changed_at_ms = 5;
+  uint64 current_version = 6;
+}
+
+message TrackedTaskView {
+  string key = 1;
+  string title = 2;
+  string status_id = 3;
+  string status_label = 4;
+  string owner = 5;
+  string parent_key = 6;
+  repeated TrackedTaskLinkView links = 7;
+  uint64 updated_at_ms = 8;
+  string owner_session_id = 9;
+  uint64 version = 10;
+  string tag = 11;
+  string internal_notes = 12;
+  repeated string tags = 13;
+}
+
+message ListTrackedTasksArgs {
+  string tool_call_id = 1;
+  repeated string keys = 2;
+  repeated string status_categories = 3;
+  optional string owner = 4;
+  optional string linked_agent_id = 5;
+  optional string cursor = 6;
+}
+
+message ListTrackedTasksError {
+  string error = 1;
+}
+
+message ListTrackedTasksSuccess {
+  repeated TrackedTaskView tasks = 1;
+  repeated TrackedTaskStatusView statuses = 2;
+  repeated TrackedTaskMemberView members = 3;
+  uint32 older_closed_count = 4;
+  bool truncated = 5;
+  uint32 matching_count = 6;
+  string message = 7;
+  repeated TrackedTaskTagView tags = 8;
+  string next_cursor = 9;
+}
+
+message ListTrackedTasksResult {
+  oneof result {
+    ListTrackedTasksSuccess success = 1;
+    ListTrackedTasksError error = 2;
+  }
+}
+
+message ListTrackedTasksToolCall {
+  ListTrackedTasksArgs args = 1;
+  ListTrackedTasksResult result = 2;
+}
+
+message CreateTrackedTasksArgs {
+  string tool_call_id = 1;
+  repeated NewTrackedTask tasks = 2;
+}
+
+message CreateTrackedTasksError {
+  string error = 1;
+}
+
+message CreateTrackedTasksSuccess {
+  repeated TrackedTaskCreated created = 1;
+  string message = 2;
+}
+
+message CreateTrackedTasksResult {
+  oneof result {
+    CreateTrackedTasksSuccess success = 1;
+    CreateTrackedTasksError error = 2;
+  }
+}
+
+message CreateTrackedTasksToolCall {
+  CreateTrackedTasksArgs args = 1;
+  CreateTrackedTasksResult result = 2;
+}
+
+message UpdateTrackedTasksArgs {
+  string tool_call_id = 1;
+  repeated TrackedTaskUpdate updates = 2;
+}
+
+message UpdateTrackedTasksError {
+  string error = 1;
+}
+
+message UpdateTrackedTasksSuccess {
+  repeated TrackedTaskUpdated updated = 1;
+  repeated TrackedTaskConflict conflicts = 2;
+  string message = 3;
+}
+
+message UpdateTrackedTasksResult {
+  oneof result {
+    UpdateTrackedTasksSuccess success = 1;
+    UpdateTrackedTasksError error = 2;
+  }
+}
+
+message UpdateTrackedTasksToolCall {
+  UpdateTrackedTasksArgs args = 1;
+  UpdateTrackedTasksResult result = 2;
+}
+
+message DeleteTrackedTasksArgs {
+  string tool_call_id = 1;
+  repeated string keys = 2;
+}
+
+message DeleteTrackedTasksError {
+  string error = 1;
+}
+
+message DeleteTrackedTasksSuccess {
+  repeated string deleted_keys = 1;
+  repeated string unparented_keys = 2;
+  string message = 3;
+}
+
+message DeleteTrackedTasksResult {
+  oneof result {
+    DeleteTrackedTasksSuccess success = 1;
+    DeleteTrackedTasksError error = 2;
+  }
+}
+
+message DeleteTrackedTasksToolCall {
+  DeleteTrackedTasksArgs args = 1;
+  DeleteTrackedTasksResult result = 2;
+}
+
+message UpdateTrackedTaskStatusesArgs {
+  string tool_call_id = 1;
+  repeated TrackedTaskStatusInput statuses = 2;
+}
+
+message UpdateTrackedTaskStatusesError {
+  string error = 1;
+}
+
+message UpdateTrackedTaskStatusesSuccess {
+  repeated TrackedTaskStatusView statuses = 1;
+  string message = 2;
+}
+
+message UpdateTrackedTaskStatusesResult {
+  oneof result {
+    UpdateTrackedTaskStatusesSuccess success = 1;
+    UpdateTrackedTaskStatusesError error = 2;
+  }
+}
+
+message UpdateTrackedTaskStatusesToolCall {
+  UpdateTrackedTaskStatusesArgs args = 1;
+  UpdateTrackedTaskStatusesResult result = 2;
+}
+
+message UpdateTrackedTaskTagsArgs {
+  string tool_call_id = 1;
+  repeated TrackedTaskTagInput tags = 2;
+}
+
+message UpdateTrackedTaskTagsError {
+  string error = 1;
+}
+
+message UpdateTrackedTaskTagsSuccess {
+  repeated TrackedTaskTagView tags = 1;
+  string message = 2;
+}
+
+message UpdateTrackedTaskTagsResult {
+  oneof result {
+    UpdateTrackedTaskTagsSuccess success = 1;
+    UpdateTrackedTaskTagsError error = 2;
+  }
+}
+
+message UpdateTrackedTaskTagsToolCall {
+  UpdateTrackedTaskTagsArgs args = 1;
+  UpdateTrackedTaskTagsResult result = 2;
 }
 
 // Source: agent.v1.AgentService (var: i)

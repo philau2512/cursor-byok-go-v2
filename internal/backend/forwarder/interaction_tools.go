@@ -394,6 +394,9 @@ func buildGenerateImageErrorResult(message string) (*agentv1.GenerateImageResult
 }
 
 func isLocalStateTool(name string) bool {
+	if isTrackedTaskTool(name) {
+		return true
+	}
 	switch strings.TrimSpace(name) {
 	case "TodoWrite", "SaveMemory", "SearchMemory":
 		return true
@@ -403,6 +406,9 @@ func isLocalStateTool(name string) bool {
 }
 
 func (service *Service) handleLocalStateToolInvocation(stream *ActiveStream, invocation runtimecore.ToolInvocation) error {
+	if isTrackedTaskTool(invocation.ToolName) {
+		return service.handleTrackedTaskToolInvocation(stream, invocation)
+	}
 	switch strings.TrimSpace(invocation.ToolName) {
 	case "TodoWrite":
 		return service.handleTodoWriteToolInvocation(stream, invocation)

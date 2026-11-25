@@ -16,7 +16,9 @@ type cachedToolCatalogEntry struct {
 }
 
 var (
-	cachedToolCatalogs = make(map[promptassets.Mode]cachedToolCatalogEntry)
+	cachedToolCatalogs         = make(map[promptassets.Mode]cachedToolCatalogEntry)
+	cachedToolCatalogNameSets  = make(map[promptassets.Mode]map[string]struct{})
+	cachedAllKnownToolNames    = make(map[string]struct{})
 )
 
 func init() {
@@ -37,17 +39,21 @@ func init() {
 			continue
 		}
 		names := make([]string, 0, len(items))
+		nameSet := make(map[string]struct{}, len(items))
 		for _, item := range items {
 			name, err := extractToolName(item)
 			if err != nil {
 				continue
 			}
 			names = append(names, name)
+			nameSet[name] = struct{}{}
+			cachedAllKnownToolNames[name] = struct{}{}
 		}
 		cachedToolCatalogs[mode] = cachedToolCatalogEntry{
 			items: items,
 			names: names,
 		}
+		cachedToolCatalogNameSets[mode] = nameSet
 	}
 }
 
@@ -98,151 +104,8 @@ func (catalog *DefaultToolCatalog) Load(mode agentv1.AgentMode, subagentTypeName
 	return filtered, names, nil
 }
 
-var agentModeToolNames = map[string]struct{}{
-	"AskQuestion":          {},
-	"CallMcpTool":          {},
-	"CreatePlan":           {},
-	"Delete":               {},
-	"FetchMcpResource":     {},
-	"GenerateImage":        {},
-	"Glob":                 {},
-	"Grep":                 {},
-	"Ls":                   {},
-	"PatchEdit":            {},
-	"Read":                 {},
-	"ReadLints":            {},
-	"Shell":                {},
-	"AwaitShell":           {},
-	"WriteShellStdin":      {},
-	"ForceBackgroundShell": {},
-	"SwitchMode":           {},
-	"Task":                 {},
-	"TodoWrite":            {},
-	"WebFetch":             {},
-	"WebSearch":            {},
-	"Write":                {},
-	"SaveMemory":           {},
-	"SearchMemory":         {},
-}
-
-var multitaskModeToolNames = map[string]struct{}{
-	"AskQuestion":          {},
-	"CallMcpTool":          {},
-	"Delete":               {},
-	"FetchMcpResource":     {},
-	"GenerateImage":        {},
-	"Glob":                 {},
-	"Grep":                 {},
-	"Ls":                   {},
-	"PatchEdit":            {},
-	"Read":                 {},
-	"ReadLints":            {},
-	"Shell":                {},
-	"AwaitShell":           {},
-	"WriteShellStdin":      {},
-	"ForceBackgroundShell": {},
-	"SwitchMode":           {},
-	"Task":                 {},
-	"TodoWrite":            {},
-	"WebFetch":             {},
-	"WebSearch":            {},
-	"Write":                {},
-	"SaveMemory":           {},
-	"SearchMemory":         {},
-}
-
-var debugModeToolNames = map[string]struct{}{
-	"AskQuestion":          {},
-	"CallMcpTool":          {},
-	"Delete":               {},
-	"FetchMcpResource":     {},
-	"Glob":                 {},
-	"Grep":                 {},
-	"Ls":                   {},
-	"PatchEdit":            {},
-	"Read":                 {},
-	"ReadLints":            {},
-	"Shell":                {},
-	"AwaitShell":           {},
-	"WriteShellStdin":      {},
-	"ForceBackgroundShell": {},
-	"Task":                 {},
-	"TodoWrite":            {},
-	"WebFetch":             {},
-	"WebSearch":            {},
-	"Write":                {},
-	"SaveMemory":           {},
-	"SearchMemory":         {},
-}
-
-var askModeToolNames = map[string]struct{}{
-	"AskQuestion":          {},
-	"CallMcpTool":          {},
-	"Delete":               {},
-	"FetchMcpResource":     {},
-	"Glob":                 {},
-	"Grep":                 {},
-	"Ls":                   {},
-	"PatchEdit":            {},
-	"Read":                 {},
-	"ReadLints":            {},
-	"Shell":                {},
-	"AwaitShell":           {},
-	"WriteShellStdin":      {},
-	"ForceBackgroundShell": {},
-	"Task":                 {},
-	"TodoWrite":            {},
-	"WebFetch":             {},
-	"WebSearch":            {},
-	"Write":                {},
-	"SaveMemory":           {},
-	"SearchMemory":         {},
-}
-
-var planModeToolNames = map[string]struct{}{
-	"AskQuestion":          {},
-	"CallMcpTool":          {},
-	"CreatePlan":           {},
-	"Delete":               {},
-	"FetchMcpResource":     {},
-	"Glob":                 {},
-	"Grep":                 {},
-	"Ls":                   {},
-	"PatchEdit":            {},
-	"Read":                 {},
-	"ReadLints":            {},
-	"Shell":                {},
-	"AwaitShell":           {},
-	"WriteShellStdin":      {},
-	"ForceBackgroundShell": {},
-	"Task":                 {},
-	"TodoWrite":            {},
-	"WebFetch":             {},
-	"WebSearch":            {},
-	"Write":                {},
-	"SaveMemory":           {},
-	"SearchMemory":         {},
-}
-
 var childConversationDisallowedAgentToolNames = map[string]struct{}{
 	"AskQuestion": {},
-}
-
-func supportedToolNamesForMode(mode agentv1.AgentMode) map[string]struct{} {
-	switch normalizeMode(mode) {
-	case agentv1.AgentMode_AGENT_MODE_AGENT:
-		return agentModeToolNames
-	case agentv1.AgentMode_AGENT_MODE_ASK:
-		return askModeToolNames
-	case agentv1.AgentMode_AGENT_MODE_PLAN:
-		return planModeToolNames
-	case agentv1.AgentMode_AGENT_MODE_DEBUG:
-		return debugModeToolNames
-	case agentv1.AgentMode_AGENT_MODE_MULTITASK:
-		return multitaskModeToolNames
-	default:
-		return nil
-	}
 }
 
 func isKnownToolName(toolName string) bool {
@@ -250,18 +113,8 @@ func isKnownToolName(toolName string) bool {
 	if trimmedToolName == "" {
 		return false
 	}
-	for _, supported := range []map[string]struct{}{
-		agentModeToolNames,
-		askModeToolNames,
-		planModeToolNames,
-		debugModeToolNames,
-		multitaskModeToolNames,
-	} {
-		if _, ok := supported[trimmedToolName]; ok {
-			return true
-		}
-	}
-	return false
+	_, ok := cachedAllKnownToolNames[trimmedToolName]
+	return ok
 }
 
 func isToolAllowedInMode(mode agentv1.AgentMode, subagentTypeName string, toolName string) bool {
@@ -273,15 +126,17 @@ func isToolAllowedInMode(mode agentv1.AgentMode, subagentTypeName string, toolNa
 		if _, disallowed := childConversationDisallowedAgentToolNames[trimmedToolName]; disallowed {
 			return false
 		}
-		_, ok := agentModeToolNames[trimmedToolName]
-		return ok
 	}
-	supported := supportedToolNamesForMode(mode)
-	if supported == nil {
+	assetMode, err := toolAssetModeForConversation(mode, subagentTypeName)
+	if err != nil {
 		return false
 	}
-	_, ok := supported[trimmedToolName]
-	return ok
+	nameSet, ok := cachedToolCatalogNameSets[assetMode]
+	if !ok {
+		return false
+	}
+	_, allowed := nameSet[trimmedToolName]
+	return allowed
 }
 
 func isChildConversationSubagentTypeName(subagentTypeName string) bool {
