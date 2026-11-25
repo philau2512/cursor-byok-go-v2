@@ -2950,14 +2950,15 @@ func (service *Service) failActiveStream(stream *ActiveStream, conversationID st
 	return service.finishFailedTurnAfterCheckpoint(stream, terminalCode, terminalMessage)
 }
 
-// buildRunEntries 构造一次 run intent 需要写入 history 的首批 entry。
-// historyEntries 有两个用途：判断本 turn 是否该落完整 static context，以及把此前 entry 中的
-// MCP descriptors 前推到本 turn 的 entry，避免 auto-compaction 后 model-visible history 永久缺失
-// <mcp_file_system>/<mcp_meta_tools>。
+// buildRunEntries dựng loạt entry đầu tiên mà một run intent cần ghi vào history.
+// historyEntries có hai tác dụng: quyết định turn này có được ghi full static context hay không,
+// và bù static context của các turn trước (MCP descriptors, skill descriptors, custom subagents,
+// repository_info) vào entry của turn hiện tại, để auto-compaction — vốn chỉ preserve entry của
+// turn đang chạy — không cắt <mcp_file_system>/<agent_skills>/<subagents> khỏi model-visible history.
 func buildRunEntries(intent InboundIntent, effectiveMode agentv1.AgentMode, turnSeq int64, historyEntries []HistoryEntry) ([]HistoryEntry, error) {
 	entries := make([]HistoryEntry, 0, 4)
 	if intent.RequestContext != nil {
-		requestContext := carryForwardMCPOptions(intent.RequestContext, historyEntries)
+		requestContext := carryForwardStaticContext(intent.RequestContext, historyEntries)
 		normalized := normalizeRequestContextForStorageMode(requestContext, shouldPersistStaticRequestContext(historyEntries))
 		if normalized != nil {
 			payload, err := protojson.Marshal(normalized)

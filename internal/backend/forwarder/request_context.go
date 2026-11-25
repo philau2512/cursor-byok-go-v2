@@ -3,6 +3,7 @@ package forwarder
 import (
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -94,10 +95,77 @@ func normalizeRealtimeRequestContextForStorage(requestContext *agentv1.RequestCo
 			normalized.McpMetaToolOptions = cloned
 		}
 	}
+	// Skills, subagents và repository_info cũng chỉ có trong payload turn 1. Nếu entry realtime
+	// không mang chúng thì auto-compaction (chỉ preserve entry của turn hiện tại) sẽ cắt
+	// <agent_skills>/<subagents> và làm méo <user_info> khỏi model-visible history.
+	// Sao chép đúng công thức của static normalization để content trùng khít, projector dedup
+	// gộp mọi block static về một bản duy nhất.
+	if descriptors := guardSkillDescriptors(collectSkillDescriptors(requestContext)); len(descriptors) > 0 {
+		normalized.SkillOptions = &agentv1.SkillOptions{SkillDescriptors: cloneProtoMessages(descriptors)}
+	}
+	normalized.CustomSubagents = projectRealtimeCustomSubagents(requestContext.GetCustomSubagents())
+	normalized.RepositoryInfo = cloneProtoMessages(requestContext.GetRepositoryInfo())
 	if !hasRealtimeRequestContextContent(normalized) && normalized.Env == nil && len(normalized.GitRepos) == 0 {
 		return nil
 	}
 	return normalized
+}
+
+// cloneProtoMessages sao deepcopy từng message protobuf trong slice; trả về nil khi rỗng để
+// protojson không ghi field null.
+func cloneProtoMessages[T proto.Message](items []T) []T {
+	if len(items) == 0 {
+		return nil
+	}
+	cloned := make([]T, 0, len(items))
+	for _, item := range items {
+		if isNilProtoMessage(item) {
+			continue
+		}
+		if copyItem, ok := proto.Clone(item).(T); ok {
+			cloned = append(cloned, copyItem)
+		}
+	}
+	if len(cloned) == 0 {
+		return nil
+	}
+	return cloned
+}
+
+// isNilProtoMessage báo true cả với pointer typed-nil vì proto.Clone panic với message nil.
+func isNilProtoMessage(message proto.Message) bool {
+	if message == nil {
+		return true
+	}
+	value := reflect.ValueOf(message)
+	return value.Kind() == reflect.Ptr && value.IsNil()
+}
+
+// projectRealtimeCustomSubagents sao subagents vào entry realtime nhưng cắt Prompt/Tools:
+// render (<subagents>) và local discovery chỉ cần Name/Description, trong khi system prompt của
+// mỗi subagent có thể vài KB — giữ nguyên sẽ nhân bản toàn bộ vào history ở mọi turn.
+// Bỏ field không ảnh hưởng nội dung render nên projector dedup vẫn gộp về một block static.
+func projectRealtimeCustomSubagents(items []*agentv1.CustomSubagent) []*agentv1.CustomSubagent {
+	if len(items) == 0 {
+		return nil
+	}
+	projected := make([]*agentv1.CustomSubagent, 0, len(items))
+	for _, item := range items {
+		if isNilProtoMessage(item) {
+			continue
+		}
+		cloned, ok := proto.Clone(item).(*agentv1.CustomSubagent)
+		if !ok || cloned == nil {
+			continue
+		}
+		cloned.Prompt = ""
+		cloned.Tools = nil
+		projected = append(projected, cloned)
+	}
+	if len(projected) == 0 {
+		return nil
+	}
+	return projected
 }
 
 func normalizeRealtimeFileContents(fileContents map[string]string) map[string]string {
@@ -123,6 +191,9 @@ func hasRealtimeRequestContextContent(requestContext *agentv1.RequestContext) bo
 		return false
 	}
 	return len(requestContext.GetRules()) > 0 ||
+		len(requestContext.GetSkillOptions().GetSkillDescriptors()) > 0 ||
+		len(requestContext.GetCustomSubagents()) > 0 ||
+		len(requestContext.GetRepositoryInfo()) > 0 ||
 		len(requestContext.GetFileContents()) > 0 ||
 		strings.TrimSpace(requestContext.GetUserIntentSummary()) != "" ||
 		strings.TrimSpace(requestContext.GetHooksAdditionalContext()) != "" ||
@@ -341,16 +412,20 @@ func buildSkillDiscoveryMessage(requestContext *agentv1.RequestContext) string {
 	return strings.Join(lines, "\n\n")
 }
 
-// carryForwardMCPOptions bù MCP descriptors vào request context sống khi client không gửi
-// lên (chúng chỉ có trong payload turn 1). Quét ngược history đã persist để lấy snapshot MCP
-// mới nhất; payload rỗng nhưng tồn tại được coi là tín hiệu "đã clear" nên không bù.
-func carryForwardMCPOptions(requestContext *agentv1.RequestContext, entries []HistoryEntry) *agentv1.RequestContext {
+// carryForwardStaticContext bù các field static (MCP descriptors, skill descriptors, custom
+// subagents, repository_info) vào request context sống khi client không gửi lên — chúng chỉ có
+// trong payload turn 1. Client chỉ gửi lại đầy đủ ở turn đầu, nên nếu không bù thì entry realtime
+// của các turn sau mất dần static context và auto-compaction sẽ cắt nó khỏi model-visible history.
+//
+// Quét ngược history đã persist để lấy snapshot mới nhất cho từng field; payload rỗng nhưng tồn
+// tại được coi là tín hiệu "đã clear" nên không bù. Vòng lặp dừng ngay khi mọi field đã có, còn
+// trường hợp conversation chưa từng có skills/subagents thì chi phí bằng một lượt quét các entry
+// request_context (cùng cỡ với shouldPersistStaticRequestContext đang chạy mỗi turn).
+func carryForwardStaticContext(requestContext *agentv1.RequestContext, entries []HistoryEntry) *agentv1.RequestContext {
 	if requestContext == nil || len(entries) == 0 {
 		return requestContext
 	}
-	if requestContext.GetMcpFileSystemOptions() != nil || requestContext.GetMcpMetaToolOptions() != nil {
-		return requestContext
-	}
+	var cloned *agentv1.RequestContext
 	for index := len(entries) - 1; index >= 0; index-- {
 		entry := entries[index]
 		if strings.TrimSpace(entry.Kind) != "request_context" || len(entry.Payload) == 0 {
@@ -360,28 +435,72 @@ func carryForwardMCPOptions(requestContext *agentv1.RequestContext, entries []Hi
 		if err := protojson.Unmarshal(entry.Payload, prior); err != nil {
 			continue
 		}
-		priorFileSystem := prior.GetMcpFileSystemOptions()
-		priorMeta := prior.GetMcpMetaToolOptions()
-		if priorFileSystem == nil && priorMeta == nil {
+		if !requestContextCarriesStaticPayload(prior) {
 			continue
 		}
-		cloned, ok := proto.Clone(requestContext).(*agentv1.RequestContext)
-		if !ok || cloned == nil {
-			cloned = requestContext
-		}
-		if priorFileSystem != nil {
-			if options, ok := proto.Clone(priorFileSystem).(*agentv1.McpFileSystemOptions); ok && options != nil {
-				cloned.McpFileSystemOptions = options
+		if cloned == nil {
+			if copyRequestContext, ok := proto.Clone(requestContext).(*agentv1.RequestContext); ok && copyRequestContext != nil {
+				cloned = copyRequestContext
+			} else {
+				cloned = requestContext
 			}
 		}
-		if priorMeta != nil {
-			if options, ok := proto.Clone(priorMeta).(*agentv1.McpMetaToolOptions); ok && options != nil {
-				cloned.McpMetaToolOptions = options
-			}
+		fillMissingStaticFields(cloned, prior)
+		if staticContextFilled(cloned) {
+			break
 		}
-		return cloned
 	}
-	return requestContext
+	if cloned == nil {
+		return requestContext
+	}
+	return cloned
+}
+
+// fillMissingStaticFields chỉ sao chép field mà request context sống còn thiếu, không ghi đè
+// dữ liệu client vừa gửi (kể cả payload rỗng = client báo đã clear), và không mutate bản sống.
+func fillMissingStaticFields(target, source *agentv1.RequestContext) {
+	if target == nil || source == nil {
+		return
+	}
+	if target.GetMcpFileSystemOptions() == nil {
+		if options := source.GetMcpFileSystemOptions(); options != nil {
+			if cloned, ok := proto.Clone(options).(*agentv1.McpFileSystemOptions); ok && cloned != nil {
+				target.McpFileSystemOptions = cloned
+			}
+		}
+	}
+	if target.GetMcpMetaToolOptions() == nil {
+		if options := source.GetMcpMetaToolOptions(); options != nil {
+			if cloned, ok := proto.Clone(options).(*agentv1.McpMetaToolOptions); ok && cloned != nil {
+				target.McpMetaToolOptions = cloned
+			}
+		}
+	}
+	if len(target.GetSkillOptions().GetSkillDescriptors()) == 0 {
+		if descriptors := source.GetSkillOptions().GetSkillDescriptors(); len(descriptors) > 0 {
+			target.SkillOptions = &agentv1.SkillOptions{SkillDescriptors: cloneProtoMessages(descriptors)}
+		}
+	}
+	if len(target.GetCustomSubagents()) == 0 {
+		target.CustomSubagents = projectRealtimeCustomSubagents(source.GetCustomSubagents())
+	}
+	if len(target.GetRepositoryInfo()) == 0 {
+		target.RepositoryInfo = cloneProtoMessages(source.GetRepositoryInfo())
+	}
+}
+
+// staticContextFilled báo mọi field static cần bù đã có dữ liệu. MCP được coi là đủ khi client
+// dùng một trong hai variant (file system hoặc meta tools).
+func staticContextFilled(requestContext *agentv1.RequestContext) bool {
+	if requestContext == nil {
+		return false
+	}
+	if requestContext.GetMcpFileSystemOptions() == nil && requestContext.GetMcpMetaToolOptions() == nil {
+		return false
+	}
+	return len(requestContext.GetSkillOptions().GetSkillDescriptors()) > 0 &&
+		len(requestContext.GetCustomSubagents()) > 0 &&
+		len(requestContext.GetRepositoryInfo()) > 0
 }
 
 // shouldPersistStaticRequestContext báo hiệu đây là turn ĐẦU TIÊN model-visible history

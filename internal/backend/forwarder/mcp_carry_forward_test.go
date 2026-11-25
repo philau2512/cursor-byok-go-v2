@@ -331,7 +331,7 @@ func TestCarryForwardDoesNotMutateLiveRequestContext(t *testing.T) {
 	turn1Entry := mcpCarryRequestContextEntry(t, 1, "request-1", mcpCarryOptionsRequestContext(root, mcpCarryDescriptor(root)), nil)
 
 	liveRC := mcpCarryLiveRequestContext(root, false)
-	carried := carryForwardMCPOptions(liveRC, []HistoryEntry{turn1Entry})
+	carried := carryForwardStaticContext(liveRC, []HistoryEntry{turn1Entry})
 	if carried.GetMcpFileSystemOptions() == nil {
 		t.Fatal("carry-forward did not fill MCP options")
 	}

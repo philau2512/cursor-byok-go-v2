@@ -1238,6 +1238,20 @@ func autoCompactionPreservedEntryIndexes(entries []HistoryEntry, turnSeq int64, 
 			latestToolCallIndex = index
 		}
 	}
+	// Fallback: turn bị compact không có entry request_context nào khớp TurnSeq+RequestID
+	// (prewarm/supersede đã chiếm turnSeq, hoặc run intent đến mà client không gửi request context).
+	// Khi đó projector sẽ cắt sạch <mcp_file_system>/<rules>/<agent_skills>/<user_info> khỏi
+	// model-visible history, model mất tool sau compact cho tới khi user stop và gửi tin mới.
+	// Giữ lại entry request_context gần nhất để static context còn nguồn render.
+	if !preservedIndexesHaveRequestContext(entries, preserved) {
+		for index := len(entries) - 1; index >= 0; index-- {
+			if strings.TrimSpace(entries[index].Kind) != "request_context" || len(entries[index].Payload) == 0 {
+				continue
+			}
+			preserved[index] = struct{}{}
+			break
+		}
+	}
 	if latestToolCallIndex < 0 || !toolCallEntryNeedsReasoningCarrier(entries[latestToolCallIndex]) {
 		return preserved
 	}
@@ -1245,6 +1259,19 @@ func autoCompactionPreservedEntryIndexes(entries []HistoryEntry, turnSeq int64, 
 		preserved[carrierIndex] = struct{}{}
 	}
 	return preserved
+}
+
+// preservedIndexesHaveRequestContext báo trong tập index được giữ có entry request_context nào.
+func preservedIndexesHaveRequestContext(entries []HistoryEntry, preserved map[int]struct{}) bool {
+	for index := range preserved {
+		if index < 0 || index >= len(entries) {
+			continue
+		}
+		if strings.TrimSpace(entries[index].Kind) == "request_context" {
+			return true
+		}
+	}
+	return false
 }
 
 func toolCallEntryNeedsReasoningCarrier(entry HistoryEntry) bool {
