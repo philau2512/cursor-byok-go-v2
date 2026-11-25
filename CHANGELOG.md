@@ -2,6 +2,57 @@
 
 > Record local changes by date, newest first. Each change uses a `## YYYY-MM-DD` heading and a separate `###` entry.
 
+## 2026-11-25
+
+### Added: Local subscription tool channel for BYOK-owned tools
+
+### Changes
+
+- **New registry seam**: `internal/backend/forwarder/local_subscription_tools.go` owns the `ListLocalSubscriptionTools` / `CallLocalSubscriptionTool` channel and holds the only list of BYOK-owned server-side tools; adding a tool is one spec entry, not a new route.
+- **One source of tool truth**: `tool_name`, `description` and `input_schema_json` are read from `prompt/tools.json` through `prompt.ReadTools`, so the subscription view cannot drift from the catalog the model already sees.
+- **Memory tools migrated onto the channel**: `SaveMemory` / `SearchMemory` now execute through `CallLocalSubscriptionTool`, reusing `saveMemoryResult` / `searchMemoryResult` verbatim instead of duplicating logic.
+- **Error taxonomy**: an unknown `tool_name` is a protocol error (`NOT_FOUND`), while a business condition (memory disabled, no workspace scope) returns `is_error=true` with readable text so the model can act on it.
+- **Conversation-scoped stream lookup**: `StreamBroker.ActiveStreamForConversation` resolves the `ActiveStream` from `conversation_id` (preferred non-terminal, then most recently updated) because this channel carries no `request_id`.
+- **Scoped proto port**: `proto/byok_local_v1.proto` defines the four messages with the upstream field numbers but its own package, so it cannot collide with a future `sync:proto`; it is wired into `generate:proto` and documented for deletion once the real sync lands.
+
+### Open assumption
+
+- `result_json` shape is not observable from the schema alone; the spike returns `{"text": ...}`. Verify against the client bundle when proto sync (phase a) runs.
+
+### Regression coverage
+
+- Added `internal/backend/forwarder/local_subscription_tools_test.go`: catalog validity, list gating on the memory flag, unknown-tool rejection, disabled-memory business error, and a full save→search round trip through the channel.
+
+### Verification
+
+```powershell
+go build ./...
+go test ./internal/backend/forwarder/ -run Subscription -count=1
+go test ./internal/... -count=1
+```
+
+### Added: Bidirectional `agent.v1.AgentService/Run` chat channel for newer Cursor clients
+
+### Changes
+
+- **New bidi entry point**: `internal/backend/forwarder/run_bidi.go` implements `Service.Run` for `/agent.v1.AgentService/Run`, where inbound `AgentClientMessage` and outbound `AgentServerMessage` share one stream. Newer Cursor builds removed `aiserver.v1.BidiService/BidiAppend` (the input half of the old two-call channel), so `run_request` now only has this carrier.
+- **Per-stream request id**: the handler mints `agent-run-<uuid>` and shares it across both directions, so `exec` / `interaction` / `kv` results correlate with `run_request` without the legacy `append_seqno` idempotency tracker.
+- **Cursor reset invariant**: dispatching an intent that starts a run resets the local read cursor, because `OpenStream` clears the backlog and zeroes subscriber cursors.
+- **Fault tolerance by frame kind**: an undecodable `run_request` / `prewarm_request` aborts the stream with `INVALID_ARGUMENT`, while heartbeat and result frames are tolerated so a live provider loop is not killed by one bad frame.
+- **Legacy routes preserved**: `BidiAppend` and `RunSSE` stay registered for older clients; `Module.AgentRunHandler` is wired in `host.go` next to them.
+
+### Regression coverage
+
+- Added `internal/backend/forwarder/run_bidi_test.go`: h2c round-trips proving the stream closes cleanly with no frames, dispatches a real `run_request` without deadlocking, honours the cursor-reset contract, and classifies normal stream end.
+
+### Verification
+
+```powershell
+go build ./...
+go test ./internal/backend/... -count=1
+go test -race ./internal/backend/forwarder/ -run "Bidi|AgentRun" -count=1
+```
+
 ## 2026-08-19
 
 ### Fixed: Checkpoint blob lockup on failed turns and prompt deduplication
