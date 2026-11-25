@@ -4,6 +4,12 @@
 
 ## 2026-11-26
 
+### Changed: version bumped to 0.0.51
+
+- Nguồn sự thật `build/config.yml` (`info.version`) và toàn bộ metadata đóng gói đã đồng bộ: `build/windows/info.json`, `build/windows/nsis/wails_tools.nsh`, `build/windows/wails.exe.manifest`, `build/darwin/Info.plist`, `build/darwin/Info.dev.plist`, `build/linux/nfpm/nfpm.yaml`.
+- `APP_VERSION` mà Taskfile dẫn xuất đã đọc lại ra `0.0.51` (`go run ./scripts/release version -config ./build/config.yml`), nên ldflags `-X cursor/internal/buildinfo.Version` và tên artifact release sẽ theo bản mới.
+- `frontend/package.json` vẫn `0.0.0` (placeholder, không liên quan tới version app). Khi phát hành chính thức có thể chạy `task common:update:build-assets` (wails3 update build-assets) để wails tự sinh lại metadata.
+
 ### Added: agent.v1 unknown-procedure fallback + InjectContextAction port (kết quả code review)
 
 ### Changes
