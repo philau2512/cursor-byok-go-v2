@@ -156,7 +156,9 @@ func decodeUnaryRequest(path string, payload []byte) (decodedJSON string, kind s
 		}
 		requestID := strings.TrimSpace(request.GetRequestId().GetRequestId())
 		outer := marshalProtoJSON(request)
-		clientMessage, clientKind, decodeErr := agentprotocol.DecodeAgentClientMessage(request.GetData())
+		// Client 3.32 có thể đặt payload ở data_binary thay vì data hex, nên
+		// debugger phải đưa cả hai carrier vào decode.
+		clientMessage, clientKind, decodeErr := agentprotocol.DecodeAgentClientMessageEnvelope(request.GetData(), request.GetDataBinary())
 		if decodeErr != nil || clientMessage == nil {
 			return outer, "bidi_append", requestID, decodeErr
 		}

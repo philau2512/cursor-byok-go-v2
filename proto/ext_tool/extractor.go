@@ -101,22 +101,27 @@ func SetStrictMode(enabled bool) {
 var activeDiagnostics *extractionDiagnostics
 
 var (
-	noRe                 = regexp.MustCompile(`(?:^|[,{]\s*)no:\s*(\d+)`)
-	nameRe               = regexp.MustCompile(`(?:^|[,{]\s*)name:\s*["']([^"']+)["']`)
-	kindRe               = regexp.MustCompile(`(?:^|[,{]\s*)kind:\s*["']([^"']+)["']`)
-	enumTypeRe           = regexp.MustCompile(`[,\s]T:\s*[\w$.]+\.getEnumType\s*\(\s*([\w$.]+)\s*\)`)
-	tRe                  = regexp.MustCompile(`[,\s]T:\s*([\w$.]+)`)
-	oneofRe              = regexp.MustCompile(`oneof:\s*["']([^"']+)["']`)
-	repeatedRe           = regexp.MustCompile(`repeated:\s*(!0|true)`)
-	optRe                = regexp.MustCompile(`opt:\s*(!0|true)`)
-	keyRe                = regexp.MustCompile(`[,\s]K:\s*(\d+)`)
-	mapValueRe           = regexp.MustCompile(`V:\s*\{([^}]*)\}`)
-	mapValueKRe          = regexp.MustCompile(`(?:^|[,{]\s*)kind:\s*["'](\w+)["']`)
-	mapValueTRe          = regexp.MustCompile(`[,\s]T:\s*([\w$.]+)`)
-	shorthandTRe         = regexp.MustCompile(`(?:^|[,\{])\s*T\s*(?:[,\}])`)
-	oneofNameRe          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	fieldNameRe          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	placeholderRe        = regexp.MustCompile(`^\s*(optional\s+|repeated\s+)?[A-Za-z_][A-Za-z0-9_.<>]*\s+(field_\d+|unknown(?:_[A-Za-z0-9_]+)?)\s*=\s*\d+\s*;`)
+	noRe         = regexp.MustCompile(`(?:^|[,{]\s*)no:\s*(\d+)`)
+	nameRe       = regexp.MustCompile(`(?:^|[,{]\s*)name:\s*["']([^"']+)["']`)
+	kindRe       = regexp.MustCompile(`(?:^|[,{]\s*)kind:\s*["']([^"']+)["']`)
+	enumTypeRe   = regexp.MustCompile(`[,\s]T:\s*[\w$.]+\.getEnumType\s*\(\s*([\w$.]+)\s*\)`)
+	tRe          = regexp.MustCompile(`[,\s]T:\s*([\w$.]+)`)
+	oneofRe      = regexp.MustCompile(`oneof:\s*["']([^"']+)["']`)
+	repeatedRe   = regexp.MustCompile(`repeated:\s*(!0|true)`)
+	optRe        = regexp.MustCompile(`opt:\s*(!0|true)`)
+	keyRe        = regexp.MustCompile(`[,\s]K:\s*(\d+)`)
+	mapValueRe   = regexp.MustCompile(`V:\s*\{([^}]*)\}`)
+	mapValueKRe  = regexp.MustCompile(`(?:^|[,{]\s*)kind:\s*["'](\w+)["']`)
+	mapValueTRe  = regexp.MustCompile(`[,\s]T:\s*([\w$.]+)`)
+	shorthandTRe = regexp.MustCompile(`(?:^|[,\{])\s*T\s*(?:[,\}])`)
+	oneofNameRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	fieldNameRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// Placeholder thật chỉ có dạng tên định danh JS bị đưa thẳng vào field name
+	// (unknown_Mc, field_3). Trước đây regex còn bắt cả "unknown" trơ và
+	// unknown_<snake lowercase>, nhưng không code path nào sinh tên kiểu đó nữa
+	// và nó là tên THẬT của upstream (Unknown unknown, unknown_tool_error_template)
+	// nên phải siết: sau unknown_ bắt buộc có ít nhất một HOA/số.
+	placeholderRe        = regexp.MustCompile(`^\s*(optional\s+|repeated\s+)?[A-Za-z_][A-Za-z0-9_.<>]*\s+(field_\d+|unknown_[a-z0-9_]*[A-Z0-9][A-Za-z0-9_]*)\s*=\s*\d+\s*;`)
 	varAliasRe           = regexp.MustCompile(`\b(?:let|const|var)\s+([\w$]+)\s*=\s*([\w$]+)\s*(?:[,;])`)
 	webpackExportBlockRe = regexp.MustCompile(`[\w$]+\.d\(\s*[\w$]+\s*,\s*\{`)
 	webpackExportEntryRe = regexp.MustCompile(`(?:^|[,\{])\s*([\w$]+)\s*:\s*\(\s*\)\s*=>\s*([\w$]+)`)
@@ -679,6 +684,15 @@ func ExtractProtos(inputFile, outputDir string) {
 	messages := extractMessages(text, moduleStarts)
 	enums := extractEnums(text, moduleStarts)
 	services := extractServices(text, moduleStarts)
+
+	// Cursor >= 3.30 đổi descriptor sang chuỗi nén. Nhánh parse cũ vẫn "trúng"
+	// một số ít definition lạc hậu nên không thể chỉ kiểm tra == 0; so sản
+	// lượng với số khối descriptor nén thực có trong bundle để quyết định.
+	if compactBlocks := len(compactBlockRe.FindAllStringIndex(text, -1)); compactBlocks > 100 && len(messages) < compactBlocks/10 {
+		fmt.Fprintf(os.Stderr, "legacy shape extracted only %d of %d compact descriptors; switching to compact schema mode\n",
+			len(messages), compactBlocks)
+		messages, enums, services = extractCompactProtos(text)
+	}
 	for _, msg := range messages {
 		if len(msg.Fields) == 0 {
 			activeDiagnostics.emptyMessages = append(activeDiagnostics.emptyMessages, msg.TypeName)
@@ -934,6 +948,47 @@ func extractMessages(text string, moduleStarts []int) []Message {
 		})
 	}
 
+	// Pattern 3: @bufbuild/protobuf makeMessageType("pkg.Msg", () => [...]) or []
+	makeMsgRe := regexp.MustCompile(`([\w$]+)\s*=\s*[\w$.]+\.makeMessageType\s*\(\s*["']([\w.]+)["']\s*,`)
+	makeMsgMatches := makeMsgRe.FindAllStringSubmatchIndex(text, -1)
+	for _, m := range makeMsgMatches {
+		varName := text[m[2]:m[3]]
+		typeName := text[m[4]:m[5]]
+
+		alreadyExists := false
+		for _, existing := range messages {
+			if existing.TypeName == typeName && existing.VarName == varName {
+				alreadyExists = true
+				break
+			}
+		}
+		if alreadyExists {
+			continue
+		}
+
+		lookaheadEnd := m[1] + 80
+		if lookaheadEnd > len(text) {
+			lookaheadEnd = len(text)
+		}
+		relBracket := strings.IndexByte(text[m[1]:lookaheadEnd], '[')
+		var fields []Field
+		if relBracket >= 0 {
+			fields = extractFieldArray(text, m[1]+relBracket)
+		}
+
+		pkg, shortName := parseTypeName(typeName)
+		messages = append(messages, Message{
+			TypeName:     typeName,
+			VarName:      varName,
+			InternalName: "",
+			Fields:       fields,
+			Package:      pkg,
+			ShortName:    shortName,
+			Pos:          m[0],
+			ModuleStart:  moduleStartForPos(moduleStarts, m[0]),
+		})
+	}
+
 	return messages
 }
 
@@ -1139,6 +1194,38 @@ func extractEnums(text string, moduleStarts []int) []Enum {
 			ModuleStart: moduleStartForPos(moduleStarts, match[0]),
 		}
 		enums = append(enums, enum)
+	}
+
+	// Pattern 2: VarName = X.makeEnum("xxx.v1.EnumName", [...])
+	makeEnumRe := regexp.MustCompile(`([\w$]+)\s*=\s*[\w$.]+\.makeEnum\s*\(\s*["']([\w.]+)["']\s*,\s*\[`)
+	makeEnumMatches := makeEnumRe.FindAllStringSubmatchIndex(text, -1)
+	for _, match := range makeEnumMatches {
+		varName := text[match[2]:match[3]]
+		typeName := text[match[4]:match[5]]
+
+		alreadyExists := false
+		for _, existing := range enums {
+			if existing.TypeName == typeName && existing.VarName == varName {
+				alreadyExists = true
+				break
+			}
+		}
+		if alreadyExists {
+			continue
+		}
+
+		bracketStart := match[1] - 1
+		values := extractEnumValues(text, bracketStart)
+		pkg, shortName := parseTypeName(typeName)
+		enums = append(enums, Enum{
+			TypeName:    typeName,
+			VarName:     varName,
+			Values:      values,
+			Package:     pkg,
+			ShortName:   shortName,
+			Pos:         match[0],
+			ModuleStart: moduleStartForPos(moduleStarts, match[0]),
+		})
 	}
 
 	return enums

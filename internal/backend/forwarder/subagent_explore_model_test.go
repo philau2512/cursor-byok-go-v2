@@ -202,10 +202,11 @@ func TestExtractRequestedContextTokensAndVariantString(t *testing.T) {
 			wantModel:  "claude-3-7-sonnet",
 		},
 		{
+			// Client 3.32 bỏ field is_variant_string_representation, nên fixture
+			// chỉ còn ModelId và dựa vào suy luận variant-string để parse.
 			name: "variant string with bracket context and reasoning",
 			model: &agentv1.RequestedModel{
-				ModelId:                       "my-custom-model[context=356k,reasoning=high]",
-				IsVariantStringRepresentation: true,
+				ModelId: "my-custom-model[context=356k,reasoning=high]",
 			},
 			wantTokens: 356_000,
 			wantModel:  "my-custom-model",
@@ -213,8 +214,7 @@ func TestExtractRequestedContextTokensAndVariantString(t *testing.T) {
 		{
 			name: "legacy variant string colon reasoning",
 			model: &agentv1.RequestedModel{
-				ModelId:                       "my-custom-model:high",
-				IsVariantStringRepresentation: true,
+				ModelId: "my-custom-model:high",
 			},
 			wantTokens: 0,
 			wantModel:  "my-custom-model",
@@ -252,8 +252,7 @@ func TestParseSubagentModelOverridesExtractsThinkingEffort(t *testing.T) {
 			SubagentType: "debugger",
 			Selection: &agentv1.SubagentModelOverride_Model{
 				Model: &agentv1.RequestedModel{
-					ModelId:                       "claude-3-7-sonnet:high",
-					IsVariantStringRepresentation: true,
+					ModelId: "claude-3-7-sonnet:high",
 				},
 			},
 		},
@@ -261,8 +260,7 @@ func TestParseSubagentModelOverridesExtractsThinkingEffort(t *testing.T) {
 			SubagentType: "planner",
 			Selection: &agentv1.SubagentModelOverride_Model{
 				Model: &agentv1.RequestedModel{
-					ModelId:                       "custom[context=356k,reasoning=low]",
-					IsVariantStringRepresentation: true,
+					ModelId: "custom[context=356k,reasoning=low]",
 				},
 			},
 		},

@@ -28,3 +28,7 @@ cmd/ads-server/ads-server-linux-amd64.tar
 cursor-tab-server/cursor-tab-server-linux-amd64.tar
 .claude/
 build/sdk/
+/tmp/
+nul
+# Nhị phân build thử của extractor (go build ./proto/ext_tool trên Windows)
+/ext_tool.exe

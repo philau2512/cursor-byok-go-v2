@@ -400,7 +400,7 @@ func requestedModelPayload(model *agentv1.RequestedModel) map[string]any {
 		"model_id":                         strings.TrimSpace(model.GetModelId()),
 		"max_mode":                         model.GetMaxMode(),
 		"built_in_model":                   model.GetBuiltInModel(),
-		"is_variant_string_representation": model.GetIsVariantStringRepresentation(),
+		"is_variant_string_representation": requestedModelUsesVariantString(model.GetModelId()),
 		"parameters":                       parameters,
 	}
 }
@@ -503,6 +503,12 @@ func conversationActionKind(action *agentv1.ConversationAction) string {
 		return "background_shell_action"
 	case *agentv1.ConversationAction_BackgroundSubagentAction:
 		return "background_subagent_action"
+	case *agentv1.ConversationAction_SubscriptionNotificationAction:
+		return "subscription_notification_action"
+	case *agentv1.ConversationAction_GoalContinuationAction:
+		return "goal_continuation_action"
+	case *agentv1.ConversationAction_InjectContextAction:
+		return "inject_context_action"
 	default:
 		return fmt.Sprintf("%T", action.GetAction())
 	}

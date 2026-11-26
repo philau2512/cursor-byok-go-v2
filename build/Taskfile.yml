@@ -13,11 +13,12 @@ tasks:
     preconditions:
       - sh: 'test -z "{{.PROTO_INPUT}}" || test -f "{{.PROTO_INPUT}}"'
         msg: "PROTO_INPUT 指向的 Cursor 扩展 bundle 不存在。"
-      - sh: 'test -n "{{.PROTO_INPUT}}" || test -f /Applications/Cursor.app/Contents/Resources/app/extensions/cursor-always-local/dist/main.js'
-        msg: "未找到已安装 Cursor 的扩展 bundle；请传入 PROTO_INPUT=/path/to/cursor-always-local/dist/main.js。"
+      # Tự động tìm bundle đa nền tảng (macOS/Windows) đã nằm trong
+      # extract_extensions_proto.sh; ở đây không hardcode đường dẫn macOS nữa.
     cmds:
       - chmod +x ./proto/extract_extensions_proto.sh
-      - '{{if .PROTO_INPUT}}./proto/extract_extensions_proto.sh "{{.PROTO_INPUT}}"{{else}}./proto/extract_extensions_proto.sh{{end}}'
+      # Windows không thực thi .sh qua shebang nên cần gọi bash tường minh.
+      - '{{if .PROTO_INPUT}}bash ./proto/extract_extensions_proto.sh "{{.PROTO_INPUT}}"{{else}}bash ./proto/extract_extensions_proto.sh{{end}}'
 
   sync:proto:
     summary: 从 Cursor 扩展快照同步 proto 并重新生成 Go 代码
@@ -29,7 +30,7 @@ tasks:
       - cp ./proto/from_extensions/aiserver_v1.proto ./proto/aiserver_v1.proto
       - perl -0pi -e 's|option go_package = "react-admin/cursor-server/gen/agent/v1;agentv1";|option go_package = "cursor/gen/agentv1;agentv1";|' ./proto/agent_v1.proto
       - perl -0pi -e 's|option go_package = "react-admin/cursor-server/gen/aiserver/v1;aiserverv1";|option go_package = "cursor/gen/aiserverv1;aiserverv1";|' ./proto/aiserver_v1.proto
-      - ./proto/check_proto_sync.sh
+      - bash ./proto/check_proto_sync.sh
       - rm -rf ./gen/agentv1 ./gen/aiserverv1
       - task: generate:proto
 
@@ -37,7 +38,7 @@ tasks:
     summary: 检查根 proto 与扩展提取快照是否一致
     dir: '{{.ROOT_DIR}}'
     cmds:
-      - ./proto/check_proto_sync.sh
+      - bash ./proto/check_proto_sync.sh
 
   generate:proto:
     summary: 生成 proto Go/Connect 代码
@@ -57,7 +58,10 @@ tasks:
         msg: "未检测到 protoc-gen-connect-go，请先安装。"
     cmds:
       - rm -rf ./gen/agentv1 ./gen/aiserverv1
-      - protoc -I ./proto --go_out=. --go_opt=module=cursor --connect-go_out=. --connect-go_opt=module=cursor ./proto/agent_v1.proto ./proto/aiserver_v1.proto
+      # proto/aiserver_compat_v1.proto giữ các type aiserver.v1 mà client 3.32
+      # đã xoá khỏi bundle nhưng server còn trả cho client cũ (IsConnected,
+      # RepositoryStatus); xóa khi không còn client cũ dùng route đó.
+      - protoc -I ./proto --go_out=. --go_opt=module=cursor --connect-go_out=. --connect-go_opt=module=cursor ./proto/agent_v1.proto ./proto/aiserver_v1.proto ./proto/aiserver_compat_v1.proto
       - gofmt -w $(find ./gen -name '*.go' -type f)
 
   go:mod:tidy:

@@ -14,6 +14,9 @@ type Module struct {
 	Service                           *Service
 	LocalBidiHandler                  http.Handler
 	LocalRunSSE                       http.Handler
+	AgentRunHandler                   http.Handler
+	LocalSubscriptionToolsHandler     http.Handler
+	LocalSubscriptionToolCallHandler  http.Handler
 	UpdateConversationMetadataHandler http.Handler
 	NameAgentHandler                  http.Handler
 	AiHandler                         http.Handler
@@ -31,6 +34,9 @@ func NewModule(historyRoot string, channelService modeladapter.ChannelResolver) 
 		Service:                           service,
 		LocalBidiHandler:                  connect.NewUnaryHandler(legacyBidiAppendProcedure, service.BidiAppend),
 		LocalRunSSE:                       NewLegacyRunSSEHandler(legacyRunSSEProcedure, service.RunSSE),
+		AgentRunHandler:                   NewAgentRunHandler(service),
+		LocalSubscriptionToolsHandler:     connect.NewUnaryHandler(ListLocalSubscriptionToolsProcedure, service.ListLocalSubscriptionTools),
+		LocalSubscriptionToolCallHandler:  connect.NewUnaryHandler(CallLocalSubscriptionToolProcedure, service.CallLocalSubscriptionTool),
 		UpdateConversationMetadataHandler: connect.NewUnaryHandler(agentv1connect.AgentServiceUpdateConversationMetadataProcedure, service.UpdateConversationMetadata),
 		NameAgentHandler:                  connect.NewUnaryHandler(agentv1connect.AgentServiceNameAgentProcedure, service.NameAgent),
 		AiHandler:                         newAIHandler(service),

@@ -315,6 +315,24 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 			server.ConnectStream(),
 			server.Local(server.HTTPHandlerAction(agentModule.LocalRunSSE)),
 		),
+		// Client protocol mới: hai chiều dùng chung một bidi stream.
+		// Vẫn giữ legacy BidiAppend / RunSSE cho client bản cũ.
+		server.POST(agentv1connect.AgentServiceRunProcedure,
+			server.Name("agent_run"),
+			server.ConnectStream(),
+			server.Local(server.HTTPHandlerAction(agentModule.AgentRunHandler)),
+		),
+		// Kênh tool cục bộ do BYOK publish (SaveMemory/SearchMemory hiện tại).
+		server.POST(forwarder.ListLocalSubscriptionToolsProcedure,
+			server.Name("local_subscription_tools_list"),
+			server.ConnectUnary(),
+			server.Local(server.HTTPHandlerAction(agentModule.LocalSubscriptionToolsHandler)),
+		),
+		server.POST(forwarder.CallLocalSubscriptionToolProcedure,
+			server.Name("local_subscription_tool_call"),
+			server.ConnectUnary(),
+			server.Local(server.HTTPHandlerAction(agentModule.LocalSubscriptionToolCallHandler)),
+		),
 		server.POST(agentv1connect.AgentServiceUpdateConversationMetadataProcedure,
 			server.Name("agent_update_conversation_metadata"),
 			server.ConnectUnary(),
@@ -324,6 +342,16 @@ func (host *Host) rebuildLocked(cfg serverconfig.Config) error {
 			server.Name("agent_name_agent"),
 			server.ConnectUnary(),
 			server.Local(server.HTTPHandlerAction(agentModule.NameAgentHandler)),
+		),
+		// Client 3.32 khai báo 20 RPC trong agent.v1.AgentService nhưng BYOK mới chỉ
+		// cài 6. Để 404 là lỗi "Class A": tính năng chết hẳn mà không có triệu chứng
+		// nào chỉ đúng chỗ thiếu, nên mọi procedure chưa có handler được fallback trả
+		// message rỗng + log tên procedure. Lần chạy thật sau của client sẽ biến đống
+		// log đó thành bằng chứng procedure nào thực sự được gọi để port tiếp.
+		server.Any("/agent.v1.AgentService/*",
+			server.Name("agent_service_fallback"),
+			server.HTTP(),
+			server.Local(agentServiceFallbackAction()),
 		),
 		server.Any("/api/prompt/optimize",
 			server.Name("prompt_optimize"),
@@ -873,6 +901,31 @@ func emptyConnectUnaryHandler() server.HandlerFunc {
 		header.Set("content-length", "0")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		return nil
+	}
+}
+
+// agentServiceFallbackAction trả message rỗng cho procedure agent.v1 chưa được
+// BYOK cài handler, để client không chết vì 404, đồng thời log tên procedure
+// thành bằng chứng runtime. Cách phân biệt unary/stream theo đúng giao thức
+// Connect: procedure streaming mới dùng content-type chứa "connect+", còn unary
+// dùng application/proto hoặc application/json.
+func agentServiceFallbackAction() server.HandlerFunc {
+	unary := emptyConnectUnaryHandler()
+	stream := emptyConnectStreamHandler()
+	return func(ctx *server.Context) error {
+		if ctx == nil || ctx.Request == nil {
+			return nil
+		}
+		contentType := strings.ToLower(strings.TrimSpace(ctx.Request.Header.Get("content-type")))
+		procedure := ""
+		if ctx.Request.URL != nil {
+			procedure = strings.TrimSpace(ctx.Request.URL.Path)
+		}
+		logger.Infof("agent.v1 procedure chưa có handler, trả response rỗng: procedure=%s content_type=%s", procedure, contentType)
+		if strings.Contains(contentType, "connect+") {
+			return stream(ctx)
+		}
+		return unary(ctx)
 	}
 }
 

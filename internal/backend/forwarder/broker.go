@@ -318,6 +318,64 @@ func (broker *StreamBroker) OtherConversationRequestIDs(conversationID string, k
 	return requestIDs
 }
 
+// ActiveStreamForConversation trả về ActiveStream mới nhất của một conversation.
+// Dùng cho các RPC chỉ mang conversation_id (không mang request_id), ví dụ kênh
+// local subscription tool. Ư tiên stream chưa kết thúc; nếu chỉ còn stream đã
+// terminal thì vẫn trả về để workspace path không bị mất ngay sau khi turn xong.
+func (broker *StreamBroker) ActiveStreamForConversation(conversationID string) (*ActiveStream, bool) {
+	normalizedConversationID := strings.TrimSpace(conversationID)
+	if broker == nil || normalizedConversationID == "" {
+		return nil, false
+	}
+	type streamCandidate struct {
+		stream         *ActiveStream
+		updatedAt      time.Time
+		terminalStatus bool
+	}
+	broker.mu.RLock()
+	candidates := make([]streamCandidate, 0, 2)
+	for _, stream := range broker.streams {
+		if stream == nil {
+			continue
+		}
+		stream.mu.Lock()
+		matches := strings.TrimSpace(stream.ConversationID) == normalizedConversationID
+		updatedAt := stream.UpdatedAt
+		status := stream.Status
+		phase := stream.Phase
+		stream.mu.Unlock()
+		if !matches {
+			continue
+		}
+		terminal := isTerminalStreamStatus(status) ||
+			phase == TurnPhaseCanceled || phase == TurnPhaseCompleted || phase == TurnPhaseFailed
+		candidates = append(candidates, streamCandidate{stream: stream, updatedAt: updatedAt, terminalStatus: terminal})
+	}
+	broker.mu.RUnlock()
+
+	var bestIndex = -1
+	for index := range candidates {
+		if bestIndex < 0 {
+			bestIndex = index
+			continue
+		}
+		// Ư tiên ứng viên chưa terminal, rồi tới ứng viên cập nhật gần nhất.
+		if candidates[bestIndex].terminalStatus != candidates[index].terminalStatus {
+			if candidates[bestIndex].terminalStatus {
+				bestIndex = index
+			}
+			continue
+		}
+		if candidates[index].updatedAt.After(candidates[bestIndex].updatedAt) {
+			bestIndex = index
+		}
+	}
+	if bestIndex < 0 {
+		return nil, false
+	}
+	return candidates[bestIndex].stream, true
+}
+
 func (broker *StreamBroker) scheduleTerminalCleanup(requestID string) bool {
 	stream, ok := broker.Get(requestID)
 	if !ok || stream == nil {

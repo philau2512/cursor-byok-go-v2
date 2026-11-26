@@ -465,25 +465,29 @@ const (
 )
 
 type InboundIntent struct {
-	Kind                     string
-	RequestID                string
-	ConversationID           string
-	ModelID                  string
-	ModelName                string
-	ThinkingEffort           string
-	RequestedContextTokens   uint32
-	Mode                     agentv1.AgentMode
-	HasExplicitMode          bool
-	ModeSource               ModeSource
-	StartsRun                bool
-	ManualCompaction         manualCompactionDirective
-	SubagentTypeName         string
-	SubagentModelOverrides   map[string]runtimecore.SubagentModelOverrideSelection
-	ConversationState        *agentv1.ConversationStateStructure
-	PreFetchedBlobs          []*agentv1.PreFetchedBlob
-	PrependUserMessages      []*agentv1.UserMessage
-	UserMessage              *agentv1.UserMessage
-	RequestContext           *agentv1.RequestContext
+	Kind                   string
+	RequestID              string
+	ConversationID         string
+	ModelID                string
+	ModelName              string
+	ThinkingEffort         string
+	RequestedContextTokens uint32
+	Mode                   agentv1.AgentMode
+	HasExplicitMode        bool
+	ModeSource             ModeSource
+	StartsRun              bool
+	ManualCompaction       manualCompactionDirective
+	SubagentTypeName       string
+	SubagentModelOverrides map[string]runtimecore.SubagentModelOverrideSelection
+	ConversationState      *agentv1.ConversationStateStructure
+	PreFetchedBlobs        []*agentv1.PreFetchedBlob
+	PrependUserMessages    []*agentv1.UserMessage
+	UserMessage            *agentv1.UserMessage
+	RequestContext         *agentv1.RequestContext
+	// InjectContext là payload inject_context_action của ConversationAction:
+	// client chèn context vào giữa run đang chạy. Để riêng một field vì nó không
+	// phải user message của run và chỉ được phép append thành prompt context.
+	InjectContext            *agentv1.InjectContextAction
 	ClientMessage            *agentv1.AgentClientMessage
 	ExecClientMessage        *agentv1.ExecClientMessage
 	ExecClientControlMessage *agentv1.ExecClientControlMessage
